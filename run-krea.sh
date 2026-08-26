@@ -3,6 +3,9 @@ set -euo pipefail
 
 # Set to true to stop the persistent server and release VRAM after this run.
 UNLOAD_MODEL_ON_FINISH=false
+# Set to false for quiet operation. When true, model-load and sampling progress
+# from the persistent server is streamed into this terminal.
+SHOW_SERVER_LOG=true
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -36,9 +39,21 @@ client=(python3 "${ROOT_DIR}/scripts/krea_server_client.py" \
     --output-dir "${KREA_OUTPUT_DIR:-${ROOT_DIR}/outputs}" \
     "${@:2}")
 
-if [[ "$UNLOAD_MODEL_ON_FINISH" == true ]]; then
-    trap '"${ROOT_DIR}/krea-server.sh" stop' EXIT
-    "${client[@]}"
-else
-    exec "${client[@]}"
+log_follow_pid=""
+cleanup() {
+    if [[ -n "$log_follow_pid" ]]; then
+        kill "$log_follow_pid" 2>/dev/null || true
+        wait "$log_follow_pid" 2>/dev/null || true
+    fi
+    if [[ "$UNLOAD_MODEL_ON_FINISH" == true ]]; then
+        "${ROOT_DIR}/krea-server.sh" stop || true
+    fi
+}
+trap cleanup EXIT INT TERM
+
+if [[ "$SHOW_SERVER_LOG" == true ]]; then
+    echo "Following server progress (the first request loads model weights)..."
+    tail -n 0 -f "${ROOT_DIR}/.runtime/krea-server.log" &
+    log_follow_pid=$!
 fi
+"${client[@]}"

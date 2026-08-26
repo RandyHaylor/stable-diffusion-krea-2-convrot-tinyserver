@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-MODEL_ROOT="${KREA_MODEL_ROOT:-/media/aikenyon/WDRed16TB/models/krea}"
+MODEL_ROOT="${KREA_MODEL_ROOT:-${ROOT_DIR}/models}"
 SERVER="${SD_SERVER:-${ROOT_DIR}/vendor/stable-diffusion.cpp/build/bin/sd-server}"
 DIT="${KREA_DIT:-${MODEL_ROOT}/Krea-2-Raw-INT8-ConvRot/krea-2-raw-int8-convrot.safetensors}"
 LLM="${KREA_LLM:-${MODEL_ROOT}/components/text_encoders/Qwen3VL-4B-Instruct-Q4_K_M.gguf}"
@@ -36,7 +36,8 @@ case "${1:-status}" in
             --vae "$VAE" \
             --lora-model-dir "$LORA_DIR" \
             --diffusion-fa \
-            --eager-load \
+            --vae-tiling \
+            --vae-tile-size 32x32 \
             --steps 52 \
             --cfg-scale 3.5 \
             >"$LOG_FILE" 2>&1 &
@@ -44,7 +45,8 @@ case "${1:-status}" in
         echo "$server_pid" >"$PID_FILE"
         echo "Krea server starting (PID $server_pid)."
         echo "Log: $LOG_FILE"
-        echo "Use '$0 logs' to watch loading; status becomes ready after the API responds."
+        echo "The HTTP API starts first; model weights load on the first generation request."
+        echo "Generation scripts stream the server log, or use '$0 logs' to watch it directly."
         ;;
     stop)
         if ! is_running; then
