@@ -1,0 +1,37 @@
+diff --git a/src/model_io/safetensors_io.cpp b/src/model_io/safetensors_io.cpp
+index 5c1128d..609f41b 100644
+--- a/src/model_io/safetensors_io.cpp
++++ b/src/model_io/safetensors_io.cpp
+@@ -106,6 +106,14 @@ struct ComfyQuantConfig {
+     int group_size = 0;
+ };
+ 
++static bool is_int8_row_quant_format(const std::string& format) {
++    // Older ComfyUI exporters called this layout "int8_tensorwise" while
++    // newer exporters use the more accurate "int8_rowwise" name. Both store
++    // I8 weights with one scale per output row and use identical ConvRot
++    // metadata.
++    return format == "int8_tensorwise" || format == "int8_rowwise";
++}
++
+ static bool read_comfy_quant_config(std::ifstream& file,
+                                     const std::string& file_path,
+                                     const std::string& tensor_name,
+@@ -293,7 +301,7 @@ bool read_safetensors_file(const std::string& file_path,
+         if (ends_with(name, ".weight")) {
+             const std::string module_name = name.substr(0, name.size() - std::string(".weight").size());
+             auto config                   = comfy_quant_configs.find(module_name);
+-            if (config != comfy_quant_configs.end() && config->second.format == "int8_tensorwise") {
++            if (config != comfy_quant_configs.end() && is_int8_row_quant_format(config->second.format)) {
+                 if (type != GGML_TYPE_I8) {
+                     set_error(error, "ComfyUI int8_tensorwise weight is not I8: '" + name + "'");
+                     return false;
+@@ -315,7 +323,7 @@ bool read_safetensors_file(const std::string& file_path,
+         } else if (ends_with(name, ".weight_scale")) {
+             const std::string module_name = name.substr(0, name.size() - std::string(".weight_scale").size());
+             auto config                   = comfy_quant_configs.find(module_name);
+-            if (config != comfy_quant_configs.end() && config->second.format == "int8_tensorwise" &&
++            if (config != comfy_quant_configs.end() && is_int8_row_quant_format(config->second.format) &&
+                 tensor_storage.n_dims == 2 && tensor_storage.ne[0] == 1) {
+                 tensor_storage.ne[0]  = tensor_storage.ne[1];
+                 tensor_storage.ne[1]  = 1;
