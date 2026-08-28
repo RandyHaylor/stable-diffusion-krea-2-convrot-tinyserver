@@ -644,6 +644,8 @@ function collectParams(){
     pag_enabled: $('pag_enabled').checked,
     save_lowres: $('save_lowres').checked,
     source_image: selectedSourceImage,
+    krea2_edit_enabled: $('krea2_edit_enabled').checked,
+    krea2_edit_reference_image: selectedKrea2EditReferenceImage,
     extra_loras: collectSelectedLoras(),
     model_name: $('modelName').textContent.trim(),
     checkpoint: $('checkpointSelect').value,
@@ -782,6 +784,8 @@ function loadParamsIntoForm(p){
     if (selected) strength.value = selected.strength;
   });
   setSourceImage(p.source_image || '');
+  $('krea2_edit_enabled').checked = !!p.krea2_edit_enabled;
+  setKrea2EditReferenceImage(p.krea2_edit_reference_image || '');
   window.scrollTo({top: 0, behavior: 'smooth'});
 }
 

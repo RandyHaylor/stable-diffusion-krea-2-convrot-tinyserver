@@ -26,6 +26,7 @@ from PIL import Image
 import uvicorn
 
 from image_metadata import cached_civitai_hash, embed_generation_metadata
+from krea2_edit_request import krea2_edit_native_args_fields, krea2_edit_payload_fields
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -162,6 +163,14 @@ def actual_seeds_from_backend_result(result: dict, image_count: int, fallback_se
         except (TypeError, ValueError):
             concrete.append(int(fallback_seed))
     return concrete
+
+
+def load_output_image_as_base64(filename: str) -> str:
+    """Read an image from the output folder, refusing paths that escape it."""
+    image_path = (OUTPUT_DIR / Path(filename).name).resolve()
+    if image_path.parent != OUTPUT_DIR.resolve() or not image_path.is_file():
+        raise RuntimeError(f"image not found in outputs: {filename}")
+    return base64.b64encode(image_path.read_bytes()).decode("ascii")
 
 
 def extra_sample_args_including_scheduler_settings(p: dict) -> str:
@@ -355,6 +364,7 @@ class QueueManager:
             "sample_params": sample,
             "vae_tiling_params": {"enabled": True, "tile_size_x": int(p["vae_tile_size"]),
                                   "tile_size_y": int(p["vae_tile_size"]), "target_overlap": 0.5},
+            **krea2_edit_native_args_fields(p),
         }
         if hires:
             native["hires"] = {
@@ -394,12 +404,11 @@ class QueueManager:
             if (ROOT / "models" / "loras" / item["path"]).is_file()
         ]
         endpoint = "/sdapi/v1/txt2img"
-        source_name = str(p.get("source_image", ""))
+        krea2_edit_fields = krea2_edit_payload_fields(p, load_output_image_as_base64)
+        source_name = "" if krea2_edit_fields else str(p.get("source_image", ""))
+        payload.update(krea2_edit_fields)
         if source_name:
-            source_path = (OUTPUT_DIR / Path(source_name).name).resolve()
-            if source_path.parent != OUTPUT_DIR.resolve() or not source_path.is_file():
-                raise RuntimeError(f"img2img source image not found: {source_name}")
-            payload["init_images"] = [base64.b64encode(source_path.read_bytes()).decode("ascii")]
+            payload["init_images"] = [load_output_image_as_base64(source_name)]
             payload["denoising_strength"] = float(p.get("img2img_denoise", 0.0))
             noise_add = max(0.0, min(1.0, float(p.get("img2img_noise_add", 0.0))))
             extra_args = str(payload.get("extra_sample_args", "")).strip()

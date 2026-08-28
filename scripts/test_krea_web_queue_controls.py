@@ -30,6 +30,7 @@ STUB_GENERATION_SECONDS = 1.5
 
 stub_state = {
     "generation_requests": [],
+    "generation_paths": [],
     "cancel_requests": 0,
     "cancel_flag_set": threading.Event(),
 }
@@ -62,8 +63,9 @@ class StubKreaBackendHandler(BaseHTTPRequestHandler):
             self.respond_with_json({"status": "cancelling"})
             return
 
-        if self.path == "/sdapi/v1/txt2img":
+        if self.path in ("/sdapi/v1/txt2img", "/sdapi/v1/img2img"):
             stub_state["generation_requests"].append(json.loads(raw_body))
+            stub_state["generation_paths"].append(self.path)
             deadline = time.monotonic() + STUB_GENERATION_SECONDS
             while time.monotonic() < deadline:
                 if stub_state["cancel_flag_set"].is_set():
@@ -297,6 +299,35 @@ def main() -> int:
     check("beta schedule alpha and beta are sent as extra sample args for the beta scheduler",
           beta_native_args["sample_params"]["extra_sample_args"] == "alpha=0.5,beta=0.7",
           f"extra_sample_args={beta_native_args['sample_params']['extra_sample_args']!r}")
+
+    uploaded_reference = client.post("/api/source-image",
+                                     content=base64.b64decode(ONE_PIXEL_PNG_BASE64),
+                                     headers={**session_headers,
+                                              "Content-Type": "image/png",
+                                              "X-Filename": "krea2-edit-reference.png"}).json()
+    krea2_edit_params = build_job_params("krea2-edit")
+    krea2_edit_params["krea2_edit_enabled"] = True
+    krea2_edit_params["krea2_edit_reference_image"] = uploaded_reference["name"]
+    krea2_edit_params["grounding_px"] = 768
+    client.post("/api/jobs", json={"params": krea2_edit_params}, headers=session_headers)
+    wait_until(lambda: next((j for j in client.get("/api/state", headers=session_headers).json()["history"]
+                             if (j["params"] or {}).get("prompt") == "krea2-edit"
+                             and j["status"] == "completed"), None),
+               20, "krea2-edit job to complete")
+    krea2_edit_request = find_generation_request_for_prompt("krea2-edit")
+    check("krea2 edit sends the reference as an extra image",
+          len(krea2_edit_request.get("extra_images", [])) == 1,
+          f"extra_images count={len(krea2_edit_request.get('extra_images', []))}")
+    krea2_edit_native_args = json.loads(krea2_edit_request["prompt"].split("<sd_cpp_extra_args>", 1)[1].split("</sd_cpp_extra_args>", 1)[0])
+    check("krea2 edit selects the krea2_edit reference-image preset in the native args",
+          krea2_edit_native_args.get("ref_image_args") == "preset=krea2_edit,vlm_size=768",
+          f"ref_image_args={krea2_edit_native_args.get('ref_image_args')!r}")
+    check("krea2 edit uses txt2img, since the target starts as pure noise",
+          stub_state["generation_paths"][-1] == "/sdapi/v1/txt2img",
+          f"path={stub_state['generation_paths'][-1]}")
+    check("krea2 edit never sends init_images or denoising_strength",
+          "init_images" not in krea2_edit_request and "denoising_strength" not in krea2_edit_request,
+          f"keys={sorted(krea2_edit_request)}")
 
     check_server_log_tail_reader(check)
     check("server log endpoint requires authentication",
