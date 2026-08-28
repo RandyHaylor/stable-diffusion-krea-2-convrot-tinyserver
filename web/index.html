@@ -1,0 +1,995 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Krea Tinyserver</title>
+<style>
+:root{color-scheme:dark;--bg:#101217;--panel:#191d25;--line:#303744;--accent:#66d9c1;--danger:#ff6b74;--muted:#aab3c2}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#edf1f7;font:14px system-ui,sans-serif}
+main{max-width:1500px;margin:auto;padding:18px}
+.top{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+h1{font-size:24px;margin:0 auto 0 0}
+h2{font-size:15px;color:var(--muted);margin:14px 0 6px}
+.badge{background:#25302e;border:1px solid #3e695e;padding:6px 10px;border-radius:99px}
+.model{color:var(--muted);font-size:12px}
+.checkpoint-select{width:auto;min-width:230px;padding:6px 9px;font-size:12px}
+.grid{display:grid;grid-template-columns:minmax(420px,560px) 1fr;gap:16px;margin-top:16px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px}
+label{display:block;color:var(--muted);margin:9px 0 4px}
+input,textarea,select,button{width:100%;background:#11151c;color:#fff;border:1px solid #394252;border-radius:7px;padding:9px;font:inherit}
+textarea{min-height:105px;resize:vertical}
+.fields{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.fields.two{grid-template-columns:repeat(2,1fr)}
+button{cursor:pointer;background:#243b38;border-color:#3c7469;font-weight:650}
+button:hover{filter:brightness(1.18)}
+button.danger{background:#49252a;border-color:#813942}
+.actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px}
+.job{border:1px solid var(--line);padding:9px;border-radius:8px;margin:7px 0}
+.job small{color:var(--muted);display:block;margin-top:3px}
+.job-main{display:flex;gap:12px;align-items:flex-start;justify-content:space-between}
+.job-text{min-width:0;flex:1}
+.job-prompt{margin-top:5px;white-space:pre-wrap;word-break:break-word}
+.job-details{display:grid;grid-template-columns:repeat(auto-fit,minmax(105px,1fr));gap:3px 10px;margin-top:7px;font-size:12px;color:var(--muted)}
+.job-details span{min-width:0;overflow-wrap:anywhere;white-space:normal}
+.job-details .detail-wide{grid-column:1/-1}
+.job-details .detail-loras{grid-column:1/-1;color:#d7deea}
+.job-images{display:grid;grid-template-columns:repeat(auto-fill,minmax(124px,1fr));gap:8px;min-width:260px;max-width:520px;flex:0 0 40%}
+.job-images a{display:block;text-decoration:none}
+.source-choice{display:flex;align-items:center;gap:5px;margin-bottom:4px;color:var(--muted);font-size:11px}
+.source-choice input{width:auto;margin:0}
+.results-workspace{min-height:520px}
+.source-header{padding:4px 4px 12px;border-bottom:1px solid var(--line)}
+.source-header>.source-choice{font-size:13px;margin:0}
+.selected-source-preview{display:flex;align-items:center;gap:10px;margin-top:10px;padding:8px;border:1px dashed #3e695e;border-radius:8px;background:#182522;transition:border-color .15s,background .15s}
+.selected-source-preview.dragging{border-color:var(--accent);background:#20332f}
+.source-thumb-slot{width:84px;height:84px;flex:none;display:flex;align-items:center;justify-content:center;text-align:center;border-radius:6px;border:1px solid var(--line);background:#0f1217;overflow:hidden}
+.source-thumb-slot img{width:100%;height:100%;object-fit:cover;display:block}
+.source-thumb-slot img[hidden],.source-thumb-slot span[hidden]{display:none}
+.source-thumb-slot span{padding:6px;color:var(--muted);font-size:11px;line-height:1.25}
+.selected-source-copy{min-width:0;display:grid;gap:3px}
+.selected-source-copy strong{color:var(--accent);font-size:12px}
+.selected-source-copy span{color:var(--muted);font-size:11px;overflow-wrap:anywhere}
+.selected-source-copy button{width:auto;margin-top:4px;padding:6px 10px;font-size:12px;justify-self:start}
+.result-tabs{display:flex;gap:5px;padding-top:11px;border-bottom:1px solid var(--line)}
+.result-tab{width:auto;padding:7px 15px;border-radius:7px 7px 0 0;background:#151922;border-color:var(--line);border-bottom:0;color:var(--muted)}
+.result-tab.active{background:#263a37;color:#fff;border-color:#3c7469}
+.result-tab-pane{display:none;padding-top:7px}
+.result-tab-pane.active{display:block}
+.all-outputs{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px;max-height:70vh;overflow-y:auto;margin-top:8px;padding:8px;border:1px solid var(--line);border-radius:8px;background:#11151c}
+.all-output-card{border:1px solid var(--line);border-radius:7px;padding:7px;min-width:0}
+.all-output-card img{width:100%;aspect-ratio:1;object-fit:cover;border-radius:5px;display:block;background:#0f1217}
+.all-output-card .job-details{display:block;margin-top:5px}
+.all-output-card .job-details span{display:block;margin-top:2px}
+.job-images img{width:100%;aspect-ratio:1;border-radius:8px;border:1px solid var(--line);display:block;object-fit:cover;background:#0f1217}
+.job-images small{display:block;margin-top:4px;color:var(--muted);word-break:break-all;font-size:11px;line-height:1.25}
+.job-actions{margin-top:8px}
+.error{color:#ff9ca3}
+.checks{display:flex;gap:18px;margin-top:10px;flex-wrap:wrap}
+.checks label{display:flex;align-items:center;gap:7px;margin:0}
+.checks input{width:auto}
+.loralist{border:1px solid var(--line);border-radius:8px;max-height:190px;overflow-y:auto;padding:4px;color:var(--muted)}
+.lorarow{display:flex;align-items:center;gap:9px;padding:5px 6px;border-radius:6px}
+.lorarow:hover{background:#1e2530}
+.lorarow input[type=checkbox]{width:auto;flex:none}
+.lorarow .loraname{flex:1;color:#edf1f7;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lorarow .lorasize{font-size:11px;color:var(--muted);flex:none}
+.lorarow input[type=number]{width:74px;flex:none;padding:5px 6px}
+#loginGate{position:fixed;inset:0;z-index:100;background:var(--bg);display:flex;align-items:center;justify-content:center}
+#loginGate form{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:22px;width:320px}
+#loginGate h2{margin:0 0 12px;color:#edf1f7;font-size:18px}
+#loginError{color:#ff9ca3;margin-top:10px;min-height:18px;font-size:13px}
+#appRoot[hidden]{display:none}
+.logpanel{margin-top:14px;background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.logpanel-head{display:flex;align-items:center;justify-content:space-between;padding:6px 12px;color:var(--muted);font-size:12px;border-bottom:1px solid var(--line)}
+.logpanel-head button{width:auto;padding:3px 12px;font-size:12px}
+.logpanel-body{margin:0;padding:8px 12px;font:12px/1.35 ui-monospace,SFMono-Regular,Menlo,monospace;color:#cfd7e3;white-space:pre-wrap;word-break:break-word;overflow-y:auto;height:calc(3 * 1.35 * 12px + 16px)}
+.logpanel-body.expanded{height:calc(40 * 1.35 * 12px + 16px)}
+.combo{position:relative}
+.combo input{padding-right:30px}
+.combo-toggle{position:absolute;right:1px;top:1px;bottom:1px;width:26px;padding:0;background:transparent;border:0;color:var(--muted);font-size:11px}
+.combo-numeric input{padding-right:46px}
+.combo-numeric .combo-toggle{right:19px;width:20px}
+.combo-numeric input::-webkit-inner-spin-button{opacity:1;margin-left:2px}
+.combo-numeric input{-moz-appearance:textfield}
+.combo-numeric:hover input,.combo-numeric input:focus{-moz-appearance:number-input}
+.combo-list{position:absolute;z-index:20;left:0;right:0;top:calc(100% + 2px);max-height:230px;overflow-y:auto;background:#161b23;border:1px solid var(--line);border-radius:7px;box-shadow:0 8px 22px #0009;display:none}
+.combo-list.open{display:block}
+.combo-list div{padding:7px 9px;cursor:pointer}
+.combo-list div:hover,.combo-list div.active{background:#26333f;color:var(--accent)}
+#imageViewer{position:fixed;inset:0;z-index:200;background:rgba(6,8,12,.92);display:none;align-items:center;justify-content:center;cursor:zoom-out;padding:24px}
+#imageViewer.open{display:flex}
+#imageViewer img{max-width:none;max-height:none;transform-origin:center center;box-shadow:0 18px 70px #000c;border-radius:8px;user-select:none;pointer-events:none}
+#imageViewerInfo{position:fixed;right:16px;bottom:16px;width:min(440px,calc(100vw - 32px));max-height:min(58vh,560px);display:flex;flex-direction:column;background:rgba(17,21,28,.96);border:1px solid #465163;border-radius:9px;box-shadow:0 12px 42px #000c;cursor:default;overflow:hidden}
+.viewer-info-head{display:flex;align-items:center;gap:8px;padding:8px 9px;border-bottom:1px solid var(--line)}
+.viewer-info-title{min-width:0;flex:1;color:#d7deea;font:11px ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere}
+.viewer-info-toggle{width:30px;padding:3px 7px;font-size:14px;line-height:1;background:#222b35;border-color:#465163}
+.viewer-info-body{overflow-y:auto;padding:9px}
+#imageViewerInfo.collapsed{width:min(360px,calc(100vw - 32px))}
+#imageViewerInfo.collapsed .viewer-info-head{border-bottom:0}
+#imageViewerInfo.collapsed .viewer-info-body{display:none}
+.viewer-info-prompt{white-space:pre-wrap;overflow-wrap:anywhere;margin-bottom:7px}
+.viewer-info-actions{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:9px}
+.viewer-info-actions button{padding:7px;font-size:12px}
+.viewer-info-actions button:disabled{opacity:.45;cursor:not-allowed}
+@media(max-width:900px){.grid{grid-template-columns:1fr}.fields{grid-template-columns:1fr 1fr}}
+</style></head><body>
+
+<div id="loginGate">
+  <form id="loginForm" autocomplete="off">
+    <h2>Krea Tinyserver</h2>
+    <label for="loginUser">Username</label>
+    <input id="loginUser" value="krea" autocomplete="off">
+    <label for="loginPassword">Password</label>
+    <input id="loginPassword" type="password" autocomplete="new-password">
+    <div id="loginError"></div>
+    <button type="submit" style="margin-top:10px">Log in</button>
+  </form>
+</div>
+
+<main id="appRoot" hidden>
+
+<div class="top">
+  <h1>Krea 2 ConvRot Tinyserver</h1>
+  <span id="modelName" class="model"></span>
+  <select id="checkpointSelect" class="checkpoint-select" title="Switch checkpoint"></select>
+  <span id="queueBadge" class="badge">Queue: 0</span>
+  <button style="width:auto" onclick="enqueue(false)">Queue generation</button>
+  <button style="width:auto" onclick="enqueue(true)">Queue in front</button>
+  <button class="danger" style="width:auto" onclick="post('/api/cancel-current')">Kill current</button>
+  <button class="danger" style="width:auto" onclick="post('/api/clear')">Clear waiting</button>
+  <button class="danger" style="width:auto" onclick="post('/api/kill-all')">Kill all</button>
+</div>
+
+<div class="logpanel">
+  <div class="logpanel-head">
+    <span>Server log</span>
+    <button id="logToggle" type="button" onclick="toggleLogPanelHeight()">Expand</button>
+  </div>
+  <pre id="logLines" class="logpanel-body">waiting for log…</pre>
+</div>
+
+<div id="imageViewer" aria-hidden="true">
+  <img id="imageViewerImg" alt="">
+  <div id="imageViewerInfo">
+    <div class="viewer-info-head">
+      <span id="imageViewerInfoTitle" class="viewer-info-title"></span>
+      <button id="imageViewerInfoToggle" class="viewer-info-toggle" type="button" title="Collapse image information" onclick="toggleImageViewerInfo(event)">^</button>
+    </div>
+    <div class="viewer-info-body">
+      <div id="imageViewerPrompt" class="viewer-info-prompt"></div>
+      <div id="imageViewerDetails" class="job-details"></div>
+      <div class="viewer-info-actions">
+        <button id="imageViewerUseSource" type="button" onclick="useViewerImageForImg2img(event)">Use for img2img</button>
+        <button id="imageViewerLoadSettings" type="button" onclick="applyViewerImageSettings(event)">Load settings</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="grid">
+<section class="panel">
+  <label for="preset">Preset</label>
+  <select id="preset"></select>
+
+  <label for="prompt">Prompt</label>
+  <textarea id="prompt" placeholder="Describe the image..."></textarea>
+
+  <label for="negative_prompt">Negative prompt</label>
+  <input id="negative_prompt" value="">
+
+  <div class="fields two">
+    <div><label for="resolution">Resolution</label><div class="combo" data-field="resolution"></div></div>
+    <div><label for="seed">Seed</label><div class="combo" data-field="seed"></div></div>
+  </div>
+
+  <div class="fields">
+    <div><label for="steps">Steps</label><div class="combo" data-field="steps"></div></div>
+    <div><label for="cfg">CFG</label><div class="combo" data-field="cfg"></div></div>
+  </div>
+
+  <div class="fields">
+    <div><label for="sampler">Sampler</label><div class="combo" data-field="sampler"></div></div>
+    <div><label for="scheduler">Scheduler</label><div class="combo" data-field="scheduler"></div></div>
+    <div><label for="flow_shift">Flow shift</label><div class="combo" data-field="flow_shift"></div></div>
+  </div>
+
+  <label for="extra_sample_args">Extra sample args</label>
+  <input id="extra_sample_args" value="alpha=0.5,beta=0.7">
+
+  <h2>Pag attention guidance (main stage only)</h2>
+  <div class="checks">
+    <label><input id="pag_enabled" type="checkbox"> Enable PAG</label>
+  </div>
+  <div class="fields">
+    <div><label for="pag_scale">PAG scale</label><div class="combo" data-field="pag_scale"></div></div>
+    <div><label for="pag_layers">Transformer layers</label><input id="pag_layers" value="7" placeholder="7 or 7,8,9"></div>
+  </div>
+  <div class="fields two">
+    <div><label for="pag_start">PAG start</label><div class="combo" data-field="pag_start"></div></div>
+    <div><label for="pag_end">PAG end</label><div class="combo" data-field="pag_end"></div></div>
+  </div>
+
+  <div class="checks">
+    <label><input id="hires" type="checkbox"> Hires pass</label>
+    <label><input id="save_lowres" type="checkbox"> Save low-res too</label>
+  </div>
+
+  <h2 style="margin-top:16px">LoRAs</h2>
+  <div id="loraList" class="loralist">no LoRAs found in models/loras</div>
+
+  <div class="fields">
+    <div><label for="hires_resolution">Hires resolution</label><div class="combo" data-field="hires_resolution"></div></div>
+    <div><label for="hires_steps">Hires steps</label><div class="combo" data-field="hires_steps"></div></div>
+    <div><label for="hires_denoise">Denoise</label><div class="combo" data-field="hires_denoise"></div></div>
+  </div>
+
+  <div class="fields two">
+    <div><label for="hires_upscaler">Hires upscaler</label><div class="combo" data-field="hires_upscaler"></div></div>
+    <div><label for="vae_tile_size">VAE tile size (latent; 32 = 256px)</label><div class="combo" data-field="vae_tile_size"></div></div>
+  </div>
+  <label for="img2img_denoise">Img2img denoise strength</label>
+  <div class="combo" data-field="img2img_denoise"></div>
+
+</section>
+
+<section class="panel results-workspace">
+  <div class="source-header">
+    <label class="source-choice"><input id="noSourceRadio" type="radio" name="img2img-source" value="" checked onchange="setSourceImage('')"> No img2img source selected</label>
+    <div id="selectedSourcePreview" class="selected-source-preview">
+      <div class="source-thumb-slot">
+        <img id="selectedSourceThumb" alt="Selected img2img source" hidden>
+        <span id="selectedSourceDropHint">Drag image here</span>
+      </div>
+      <div class="selected-source-copy">
+        <strong id="selectedSourceStatus">No img2img source selected</strong>
+        <span id="selectedSourceName"></span>
+        <span id="selectedSourceResolution"></span>
+        <button type="button" onclick="chooseSourceImage()">Load source image</button>
+        <input id="sourceImageFile" type="file" accept="image/png,image/jpeg,.png,.jpg,.jpeg" hidden>
+      </div>
+    </div>
+  </div>
+  <div class="result-tabs" role="tablist" aria-label="Queue and output views">
+    <button type="button" class="result-tab active" data-results-tab="current" onclick="selectResultsTab('current')">Current</button>
+    <button type="button" class="result-tab" data-results-tab="results" onclick="selectResultsTab('results')">Results</button>
+    <button type="button" class="result-tab" data-results-tab="output" onclick="selectResultsTab('output')">Output</button>
+  </div>
+  <div id="resultsTabCurrent" class="result-tab-pane active">
+    <h2>Current</h2><div id="current">Idle</div>
+    <h2>Waiting</h2><div id="waiting">Empty</div>
+  </div>
+  <div id="resultsTabResults" class="result-tab-pane">
+    <div id="history"></div>
+  </div>
+  <div id="resultsTabOutput" class="result-tab-pane">
+    <div id="allOutputs" class="all-outputs">Open this tab to load output thumbnails.</div>
+  </div>
+</section>
+</div></main>
+
+<script>
+const $ = id => document.getElementById(id);
+
+const COMMON_RESOLUTIONS = ['1024x1024','1152x896','1216x832','1344x768','896x1152','832x1216','768x1344','1152x1680','1248x1824','1344x1960','1680x1152','1824x1248','1960x1344','768x768','1536x1536'];
+const COMBO_FIELDS = {
+  resolution:      {value:'1024x1024', options:COMMON_RESOLUTIONS},
+  seed:            {value:'0',   step:1,    options:['-1','0','42']},
+  steps:           {value:'6',   step:1,    options:['3','6','8','12','28','52']},
+  cfg:             {value:'1',   step:0.1,  options:['1','3.5','4.5','7']},
+  sampler:         {value:'res_2s', options:[]},
+  scheduler:       {value:'beta',   options:[]},
+  flow_shift:      {value:'1.15', step:0.05, options:['1','1.15','2','3']},
+  pag_scale:       {value:'1',    step:0.1,  options:['0.5','0.75','1','1.5']},
+  pag_start:       {value:'0',    step:0.05, options:['0','0.1','0.25']},
+  pag_end:         {value:'1',    step:0.05, options:['0.75','0.9','1']},
+  hires_resolution:{value:'1536x1536', options:['1536x1536','1792x1792','1920x1920','2048x2048','1152x1680','1248x1824','1344x1960','1680x1152','1824x1248','1960x1344','1792x1344','1344x1792']},
+  hires_steps:     {value:'3',   step:1,    options:['2','3','4','6']},
+  hires_denoise:   {value:'0.5', step:0.05, options:['0.35','0.5','0.65']},
+  hires_upscaler:  {value:'Latent', options:[]},
+  vae_tile_size:   {value:'32',  step:1,    options:['32','64','68','128','256','512']},
+  img2img_denoise: {value:'0.75', step:0.05, options:['0.35','0.5','0.65','0.75','0.9']},
+};
+const NUMERIC_FIELDS = ['seed','steps','cfg','flow_shift','pag_scale','pag_start','pag_end','hires_steps','hires_denoise','vae_tile_size','img2img_denoise'];
+const TEXT_FIELDS = ['sampler','scheduler','hires_upscaler','extra_sample_args','pag_layers'];
+
+let presets = {};
+let openComboList = null;
+
+function buildEditableCombobox(container){
+  const field = container.dataset.field;
+  const spec = COMBO_FIELDS[field];
+  const isNumeric = spec.step !== undefined;
+  container.classList.toggle('combo-numeric', isNumeric);
+  container.innerHTML =
+    `<input id="${field}" value="${spec.value}" autocomplete="off"` +
+    (isNumeric ? ` type="number" step="${spec.step}"` : '') + `>` +
+    `<button type="button" class="combo-toggle" tabindex="-1">▼</button>` +
+    `<div class="combo-list"></div>`;
+  const input = container.querySelector('input');
+  const list = container.querySelector('.combo-list');
+
+  function renderOptions(filterText){
+    const needle = (filterText || '').toLowerCase();
+    const matches = spec.options.filter(o => o.toLowerCase().includes(needle));
+    const shown = matches.length ? matches : spec.options;
+    list.innerHTML = shown.map(o => `<div data-value="${o}">${o}</div>`).join('');
+  }
+  function openList(filterText){
+    if (!spec.options.length) return;
+    if (openComboList && openComboList !== list) openComboList.classList.remove('open');
+    renderOptions(filterText);
+    list.classList.add('open');
+    openComboList = list;
+  }
+  function closeList(){ list.classList.remove('open'); if (openComboList === list) openComboList = null; }
+
+  container.querySelector('.combo-toggle').onclick = () =>
+    list.classList.contains('open') ? closeList() : openList('');
+  input.onfocus = () => openList('');
+  input.oninput = () => openList(input.value);
+  input.onkeydown = e => { if (e.key === 'Escape') closeList(); if (e.key === 'Enter') closeList(); };
+  list.onmousedown = e => {
+    const option = e.target.closest('[data-value]');
+    if (!option) return;
+    e.preventDefault();
+    input.value = option.dataset.value;
+    closeList();
+  };
+  input.onblur = () => setTimeout(closeList, 120);
+}
+
+function setComboOptions(field, options){
+  COMBO_FIELDS[field].options = options || [];
+}
+
+function splitResolution(text){
+  const parts = String(text).toLowerCase().split('x').map(Number);
+  return [parts[0], parts[1]];
+}
+
+function applyPreset(name){
+  const preset = presets[name];
+  if (!preset) return;
+  $('resolution').value = `${preset.width}x${preset.height}`;
+  $('hires_resolution').value = `${preset.hires_width}x${preset.hires_height}`;
+  ['steps','cfg','pag_scale','pag_start','pag_end','hires_steps','hires_denoise','vae_tile_size'].forEach(k => {
+    if (preset[k] !== undefined) $(k).value = preset[k];
+  });
+  $('hires').checked = !!preset.hires;
+  $('save_lowres').checked = !!preset.save_lowres;
+  $('pag_enabled').checked = !!preset.pag_enabled;
+  if (preset.pag_layers !== undefined) $('pag_layers').value = preset.pag_layers;
+}
+
+let sessionToken = null;
+let selectedSourceImage = '';
+const outputCache = new Map();
+let outputListLoaded = false;
+let outputStateSignature = '';
+let outputListLoading = false;
+
+async function setSourceImage(name){
+  selectedSourceImage = name || '';
+  document.querySelectorAll('input[name="img2img-source"]').forEach(radio => {
+    radio.checked = radio.value === selectedSourceImage;
+  });
+  const thumb = $('selectedSourceThumb');
+  const dropHint = $('selectedSourceDropHint');
+  if (!selectedSourceImage) {
+    thumb.removeAttribute('src');
+    thumb.hidden = true;
+    dropHint.hidden = false;
+    $('selectedSourceStatus').textContent = 'No img2img source selected';
+    $('selectedSourceName').textContent = '';
+    $('selectedSourceResolution').textContent = 'Drag a PNG/JPEG here or load one from disk.';
+    return;
+  }
+  const selectedName = selectedSourceImage;
+  thumb.hidden = false;
+  dropHint.hidden = true;
+  thumb.src = outputThumbUrl(selectedName);
+  $('selectedSourceStatus').textContent = 'Img2img source selected';
+  $('selectedSourceName').textContent = selectedName;
+  $('selectedSourceResolution').textContent = 'Reading resolution…';
+  try {
+    const cached = outputCache.get(selectedName);
+    const info = cached?.width && cached?.height ? cached : await api(`/api/output-info/${encodeURIComponent(selectedName)}`);
+    if (selectedSourceImage === selectedName) {
+      $('selectedSourceResolution').textContent = `${info.width}×${info.height}`;
+    }
+  } catch (e) {
+    if (selectedSourceImage === selectedName) $('selectedSourceResolution').textContent = 'Resolution unavailable';
+  }
+}
+
+function chooseSourceImage(){
+  $('sourceImageFile').click();
+}
+
+async function uploadSourceImage(file){
+  if (!file) return;
+  if (file.type && !['image/png', 'image/jpeg'].includes(file.type)) {
+    alert('Please choose a PNG or JPEG image.');
+    return;
+  }
+  $('selectedSourceStatus').textContent = 'Uploading source image…';
+  $('selectedSourceResolution').textContent = file.name;
+  const safeHeaderName = file.name.replace(/[^\x20-\x7e]/g, '-');
+  try {
+    const response = await fetch('/api/source-image', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${sessionToken || ''}`,
+        'Content-Type': file.type || 'application/octet-stream',
+        'X-Filename': safeHeaderName,
+      },
+      body: file,
+    });
+    if (response.status === 401) {
+      showLoginGate('Session ended. Please log in again.');
+      throw new Error('not logged in');
+    }
+    if (!response.ok) throw new Error(await response.text());
+    const uploaded = await response.json();
+    outputCache.set(uploaded.name, {...uploaded, params: {}});
+    outputListLoaded = false;
+    await setSourceImage(uploaded.name);
+    if ($('resultsTabOutput').classList.contains('active')) await loadAllOutputs(true);
+  } catch (e) {
+    await setSourceImage('');
+    alert(`Could not load source image: ${e.message}`);
+  } finally {
+    $('sourceImageFile').value = '';
+  }
+}
+
+$('sourceImageFile').addEventListener('change', event => uploadSourceImage(event.target.files[0]));
+const sourceDropZone = $('selectedSourcePreview');
+['dragenter', 'dragover'].forEach(type => sourceDropZone.addEventListener(type, event => {
+  event.preventDefault();
+  sourceDropZone.classList.add('dragging');
+}));
+['dragleave', 'drop'].forEach(type => sourceDropZone.addEventListener(type, event => {
+  event.preventDefault();
+  sourceDropZone.classList.remove('dragging');
+}));
+sourceDropZone.addEventListener('drop', event => uploadSourceImage(event.dataTransfer.files[0]));
+setSourceImage('');
+
+function selectResultsTab(name){
+  document.querySelectorAll('.result-tab').forEach(tab =>
+    tab.classList.toggle('active', tab.dataset.resultsTab === name));
+  document.querySelectorAll('.result-tab-pane').forEach(pane => pane.classList.remove('active'));
+  const pane = $(`resultsTab${name[0].toUpperCase()}${name.slice(1)}`);
+  if (pane) pane.classList.add('active');
+  if (name === 'output') loadAllOutputs();
+}
+
+async function api(path, options = {}){
+  const headers = {'Content-Type':'application/json', ...(options.headers || {})};
+  if (sessionToken) headers['Authorization'] = `Bearer ${sessionToken}`;
+  const response = await fetch(path, {...options, headers});
+  if (response.status === 401) { showLoginGate('Session ended. Please log in again.'); throw new Error('not logged in'); }
+  if (!response.ok) throw new Error(await response.text());
+  return response.json();
+}
+
+function outputUrl(name){
+  return `/api/output/${encodeURIComponent(name)}?token=${encodeURIComponent(sessionToken || '')}`;
+}
+
+function outputThumbUrl(name){
+  return `/api/output-thumb/${encodeURIComponent(name)}?token=${encodeURIComponent(sessionToken || '')}`;
+}
+
+function showLoginGate(message){
+  sessionToken = null;
+  $('appRoot').hidden = true;
+  $('loginGate').style.display = 'flex';
+  $('loginError').textContent = message || '';
+  $('loginPassword').value = '';
+}
+
+async function post(path, body = {}){
+  try { await api(path, {method:'POST', body:JSON.stringify(body)}); await refresh(); }
+  catch (e) { alert(e.message); }
+}
+
+function renderLoraList(loras){
+  if (!loras.length) { $('loraList').textContent = 'no LoRAs found in models/loras'; return; }
+  $('loraList').innerHTML = loras.map((lora, index) =>
+    `<div class="lorarow">` +
+      `<input type="checkbox" id="loraEnabled${index}" data-filename="${escapeHtml(lora.filename)}">` +
+      `<span class="loraname" title="${escapeHtml(lora.filename)}">${escapeHtml(lora.name)}</span>` +
+      `<span class="lorasize">${lora.size_mb} MB</span>` +
+      `<input type="number" id="loraStrength${index}" value="1" step="0.05">` +
+    `</div>`
+  ).join('');
+}
+
+function collectSelectedLoras(){
+  return Array.from(document.querySelectorAll('#loraList .lorarow'))
+    .map(row => ({
+      filename: row.querySelector('input[type=checkbox]').dataset.filename,
+      strength: Number(row.querySelector('input[type=number]').value),
+      checked: row.querySelector('input[type=checkbox]').checked,
+    }))
+    .filter(entry => entry.checked)
+    .map(({filename, strength}) => ({filename, strength}));
+}
+
+function collectParams(){
+  const [width, height] = splitResolution($('resolution').value);
+  const [hires_width, hires_height] = splitResolution($('hires_resolution').value);
+  const params = {
+    prompt: $('prompt').value,
+    negative_prompt: $('negative_prompt').value,
+    width, height, hires_width, hires_height,
+    hires: $('hires').checked,
+    pag_enabled: $('pag_enabled').checked,
+    save_lowres: $('save_lowres').checked,
+    source_image: selectedSourceImage,
+    extra_loras: collectSelectedLoras(),
+    model_name: $('modelName').textContent.trim(),
+    checkpoint: $('checkpointSelect').value,
+  };
+  NUMERIC_FIELDS.forEach(k => params[k] = Number($(k).value));
+  TEXT_FIELDS.forEach(k => params[k] = $(k).value);
+  return params;
+}
+
+async function enqueue(front){
+  if (!$('prompt').value.trim()) return alert('Prompt is required');
+  await post('/api/jobs', {params: collectParams(), front});
+}
+
+function escapeHtml(text){
+  return String(text || '').replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
+}
+
+function formatJobDetails(params){
+  const p = params || {};
+  const generationType = p.generation_type || (p.source_image ? 'img2img' : 'txt2img');
+  const loraNames = (p.extra_loras || [])
+    .map(lora => String(lora.filename || '').replace(/\.[^.]+$/, ''));
+  const details = [
+    ['Model', p.checkpoint || p.model_name || ''],
+    ['Model hash', p.model_hash || ''],
+    ['LoRA hashes', (p.lora_hashes || []).join(', ')],
+    ['Negative prompt', p.negative_prompt || ''],
+    ['Steps', p.steps ?? ''],
+    ['CFG', p.cfg ?? ''],
+    ['Seed', p.seed ?? ''],
+    ['Sampler', p.sampler || ''],
+    ['Scheduler', p.scheduler || ''],
+    ['Flow shift', p.flow_shift ?? ''],
+    ['Extra args', p.extra_sample_args || ''],
+    ['PAG', p.pag_enabled ? 'On' : 'Off'],
+    ['PAG scale', p.pag_enabled ? (p.pag_scale ?? '') : ''],
+    ['PAG layers', p.pag_enabled ? (p.pag_layers || '') : ''],
+    ['PAG window', p.pag_enabled ? `${p.pag_start ?? 0}–${p.pag_end ?? 1}` : ''],
+    ['LoRAs', loraNames.join(', ')],
+    ['Generation', generationType],
+    ['Img2img source', generationType === 'img2img' ? (p.source_image || '') : ''],
+    ['Img2img denoise', generationType === 'img2img' ? (p.img2img_denoise ?? '') : ''],
+    ['Hires pass', p.hires ? 'On' : 'Off'],
+    ['Hires resolution', p.hires ? `${p.hires_width || ''}×${p.hires_height || ''}` : ''],
+    ['Hires steps', p.hires ? (p.hires_steps ?? '') : ''],
+    ['Denoise', p.hires ? (p.hires_denoise ?? '') : ''],
+    ['Save low-res', p.save_lowres ? 'Yes' : 'No'],
+    ['VAE tile', p.vae_tile_size ?? ''],
+  ];
+  return details
+    .filter(([, value]) => value !== '' && value !== null && value !== undefined)
+    .map(([label, value]) => {
+      const detailClass = label === 'LoRAs' ? 'detail-loras' :
+        (label === 'Negative prompt' || label === 'Extra args' ? 'detail-wide' : '');
+      return `<span class="${detailClass}" title="${escapeHtml(value)}">${escapeHtml(label)}: ${escapeHtml(value)}</span>`;
+    })
+    .join('');
+}
+
+function jobImagesHtml(job){
+  const outputs = job.outputs || [];
+  if (!outputs.length) return '';
+  return `<div class="job-images">` + outputs.map(name =>
+    `<a href="${outputUrl(name)}" target="_blank" rel="noreferrer" data-output-name="${escapeHtml(name)}">` +
+    `<span class="source-choice"><input type="radio" name="img2img-source" value="${escapeHtml(name)}"${selectedSourceImage === name ? ' checked' : ''} onchange="setSourceImage(this.value)" onclick="event.stopPropagation()"> Use for img2img</span>` +
+    `<img loading="lazy" src="${outputThumbUrl(name)}" alt="${escapeHtml(name)}">` +
+    `<small>${escapeHtml(name)}</small>` +
+    `</a>`
+  ).join('') + `</div>`;
+}
+
+function jobHtml(job, removable = false){
+  const p = job.params || {};
+  const size = `${p.width || ''}×${p.height || ''}` + (p.hires ? ` → ${p.hires_width}×${p.hires_height}` : '');
+  return `<div class="job">` +
+         `<div class="job-main">` +
+         `<div class="job-text">` +
+         `<b>${escapeHtml(job.status)}</b> · ${escapeHtml(size)}` +
+         `<button style="float:right;width:auto;padding:3px 8px;font-size:11px" onclick="loadJobSettings('${escapeHtml(job.id)}')">Load settings</button>` +
+         `<div class="job-prompt">${escapeHtml(p.prompt)}</div>` +
+         `<div class="job-details">${formatJobDetails(p)}</div>` +
+         (job.error ? `<div class="error" style="margin-top:6px">${escapeHtml(job.error)}</div>` : '') +
+         (removable ? `<div class="job-actions"><button class="danger" onclick="post('/api/jobs/${job.id}/cancel')">Remove</button></div>` : '') +
+         `</div>` +
+         jobImagesHtml(job) +
+         `</div>` +
+         `</div>`;
+}
+
+const COLLAPSED_LOG_LINE_COUNT = 3;
+const EXPANDED_LOG_LINE_COUNT = 40;
+let logPanelIsExpanded = false;
+const jobCache = new Map();
+
+function loadJobSettings(jobId){
+  const job = jobCache.get(jobId);
+  if (!job) return;
+  loadParamsIntoForm(job.params || {});
+}
+
+function loadParamsIntoForm(p){
+  p = {...p};
+  if (p.img2img && typeof p.img2img === 'object') {
+    p.source_image = p.source_image || p.img2img.source_image || '';
+    p.img2img_denoise = p.img2img_denoise ?? p.img2img.denoising_strength;
+  }
+  p.prompt = p.prompt || p.ui_prompt || '';
+  p.cfg = p.cfg ?? p.cfg_scale;
+  p.sampler = p.sampler || p.sampler_name;
+  p.extra_loras = p.extra_loras || (p.lora || []).map(lora => ({
+    filename: lora.path, strength: lora.multiplier ?? 1,
+  }));
+  p.checkpoint = p.checkpoint || p.model_name;
+  p.prompt = p.prompt.replace(/\s*<sd_cpp_extra_args>[\s\S]*?<\/sd_cpp_extra_args>\s*$/, '');
+  ['prompt','negative_prompt'].forEach(id => { if ($(id)) $(id).value = p[id] || ''; });
+  $('extra_sample_args').value = p.extra_sample_args || p.krea_extra_sample_args || '';
+  ['resolution','seed','steps','cfg','sampler','scheduler','flow_shift','pag_scale','pag_start','pag_end','pag_layers','hires_resolution',
+   'hires_steps','hires_denoise','hires_upscaler','vae_tile_size','img2img_denoise'].forEach(id => {
+    if ($(id) && p[id] !== undefined) $(id).value = p[id];
+  });
+  $('hires').checked = !!p.hires;
+  $('save_lowres').checked = !!p.save_lowres;
+  $('pag_enabled').checked = !!p.pag_enabled;
+  if (p.checkpoint) $('checkpointSelect').value = p.checkpoint;
+  document.querySelectorAll('#loraList .lorarow').forEach(row => {
+    const filename = row.querySelector('input[type=checkbox]').dataset.filename;
+    const selected = (p.extra_loras || []).find(lora => lora.filename === filename);
+    const checkbox = row.querySelector('input[type=checkbox]');
+    const strength = row.querySelector('input[type=number]');
+    checkbox.checked = !!selected;
+    if (selected) strength.value = selected.strength;
+  });
+  setSourceImage(p.source_image || '');
+  window.scrollTo({top: 0, behavior: 'smooth'});
+}
+
+function loadOutputSettings(name){
+  const output = outputCache.get(name);
+  if (output) loadParamsIntoForm(output.params || {});
+}
+
+function captureOutputScrollAnchor(panel){
+  const panelTop = panel.getBoundingClientRect().top;
+  const cards = Array.from(panel.querySelectorAll('.all-output-card'));
+  const card = cards.find(item => item.getBoundingClientRect().bottom > panelTop);
+  return card ? {
+    name: card.dataset.outputCard,
+    offset: card.getBoundingClientRect().top - panelTop,
+    scrollTop: panel.scrollTop,
+  } : {name: '', offset: 0, scrollTop: panel.scrollTop};
+}
+
+function restoreOutputScrollAnchor(panel, anchor){
+  requestAnimationFrame(() => {
+    const card = Array.from(panel.querySelectorAll('.all-output-card'))
+      .find(item => item.dataset.outputCard === anchor.name);
+    if (!card) {
+      panel.scrollTop = anchor.scrollTop;
+      return;
+    }
+    const panelTop = panel.getBoundingClientRect().top;
+    panel.scrollTop += card.getBoundingClientRect().top - panelTop - anchor.offset;
+  });
+}
+
+async function loadAllOutputs(force = false){
+  const panel = $('allOutputs');
+  if ((outputListLoaded && !force) || outputListLoading) return;
+  outputListLoading = true;
+  const scrollAnchor = captureOutputScrollAnchor(panel);
+  const hadCards = !!panel.querySelector('.all-output-card');
+  if (!hadCards) panel.textContent = 'Loading output thumbnails…';
+  try {
+    const data = await api('/api/outputs');
+    outputCache.clear();
+    data.outputs.forEach(output => outputCache.set(output.name, output));
+    panel.innerHTML = data.outputs.map(output => {
+      const p = output.params || {};
+      const resolution = output.width && output.height ? `${output.width}×${output.height}` : '';
+      return `<div class="all-output-card" data-output-card="${escapeHtml(output.name)}">` +
+        `<label class="source-choice"><input type="radio" name="img2img-source" value="${escapeHtml(output.name)}"${selectedSourceImage === output.name ? ' checked' : ''} onchange="setSourceImage(this.value)"> Use for img2img</label>` +
+        `<a class="all-output-link" href="${outputUrl(output.name)}" target="_blank" rel="noreferrer" data-output-name="${escapeHtml(output.name)}">` +
+          `<img loading="lazy" src="${outputThumbUrl(output.name)}" alt="${escapeHtml(output.name)}">` +
+          `<small>${escapeHtml(output.name)}${resolution ? ` · ${resolution}` : ''}</small>` +
+        `</a>` +
+        `<div class="job-prompt">${escapeHtml(p.prompt || '')}</div>` +
+        `<div class="job-details">${formatJobDetails(p)}</div>` +
+        `<button type="button" style="margin-top:6px;padding:5px;font-size:12px" onclick="loadOutputSettings('${escapeHtml(output.name)}')">Load settings</button>` +
+        `</div>`;
+    }).join('') || '<span>No output images found.</span>';
+    outputListLoaded = true;
+    if (hadCards) restoreOutputScrollAnchor(panel, scrollAnchor);
+    if (selectedSourceImage) setSourceImage(selectedSourceImage);
+  } catch (e) {
+    if (!hadCards) panel.textContent = `Output list unavailable: ${e.message}`;
+  } finally {
+    outputListLoading = false;
+  }
+}
+
+function replaceIfChanged(element, html){
+  if (element.innerHTML !== html) element.innerHTML = html;
+}
+
+function toggleLogPanelHeight(){
+  logPanelIsExpanded = !logPanelIsExpanded;
+  $('logLines').classList.toggle('expanded', logPanelIsExpanded);
+  $('logToggle').textContent = logPanelIsExpanded ? 'Collapse' : 'Expand';
+  refreshServerLog();
+}
+
+async function refreshServerLog(){
+  const lineCount = logPanelIsExpanded ? EXPANDED_LOG_LINE_COUNT : COLLAPSED_LOG_LINE_COUNT;
+  try {
+    const log = await api(`/api/server-log?lines=${lineCount}`);
+    const panel = $('logLines');
+    const wasPinnedToBottom = panel.scrollTop + panel.clientHeight >= panel.scrollHeight - 4;
+    panel.textContent = log.lines.length ? log.lines.join('\n') : 'log is empty';
+    if (wasPinnedToBottom) panel.scrollTop = panel.scrollHeight;
+  } catch (e) {
+    $('logLines').textContent = `log unavailable: ${e.message}`;
+  }
+}
+
+async function refresh(){
+  try {
+    const state = await api('/api/state');
+    [...(state.current ? [state.current] : []), ...state.queued, ...state.history]
+      .forEach(job => jobCache.set(job.id, job));
+    $('queueBadge').textContent = `Queue: ${state.queue_count}${state.current ? ' + running' : ''}`;
+    replaceIfChanged($('current'), state.current ? jobHtml(state.current) : 'Idle');
+    replaceIfChanged($('waiting'), state.queued.length ? state.queued.map(j => jobHtml(j, true)).join('') : 'Empty');
+    replaceIfChanged($('history'), state.history.slice(0, 8).map(j => jobHtml(j)).join(''));
+    const nextOutputSignature = state.history.flatMap(job => job.outputs || []).join('|');
+    if (outputStateSignature && nextOutputSignature !== outputStateSignature) {
+      outputListLoaded = false;
+      if ($('resultsTabOutput').classList.contains('active')) loadAllOutputs(true);
+    }
+    outputStateSignature = nextOutputSignature;
+  } catch (e) {
+    $('current').innerHTML = `<span class="error">${escapeHtml(e.message)}</span>`;
+  }
+}
+
+async function submitLogin(event){
+  event.preventDefault();
+  $('loginError').textContent = '';
+  try {
+    const response = await fetch('/api/login', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({username: $('loginUser').value, password: $('loginPassword').value}),
+    });
+    if (!response.ok) { $('loginError').textContent = 'Invalid username or password.'; return; }
+    sessionToken = (await response.json()).token;
+    $('loginPassword').value = '';
+    $('loginGate').style.display = 'none';
+    $('appRoot').hidden = false;
+    await startApp();
+  } catch (e) {
+    $('loginError').textContent = `Login failed: ${e.message}`;
+  }
+}
+
+async function startApp(){
+  try {
+    const backend = await api('/api/backend-options');
+    setComboOptions('sampler', backend.samplers);
+    setComboOptions('scheduler', backend.schedulers);
+    setComboOptions('hires_upscaler', backend.upscalers);
+    $('modelName').textContent = backend.model || '';
+    $('checkpointSelect').innerHTML = (backend.checkpoints || []).map(name =>
+      `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join('');
+    const current = (backend.checkpoints || []).find(name => backend.model && backend.model.includes(name));
+    if (current) $('checkpointSelect').value = current;
+  } catch (e) {
+    $('modelName').textContent = 'backend options unavailable';
+  }
+  document.querySelectorAll('.combo').forEach(buildEditableCombobox);
+
+  try {
+    renderLoraList((await api('/api/loras')).loras);
+  } catch (e) {
+    $('loraList').textContent = `LoRA list unavailable: ${e.message}`;
+  }
+
+  presets = await api('/api/presets');
+  $('preset').innerHTML = Object.keys(presets).map(name => `<option>${escapeHtml(name)}</option>`).join('');
+  $('preset').onchange = () => applyPreset($('preset').value);
+  applyPreset(Object.keys(presets)[0]);
+
+  document.addEventListener('mousedown', e => {
+    if (openComboList && !e.target.closest('.combo')) {
+      openComboList.classList.remove('open');
+      openComboList = null;
+    }
+  });
+
+  refresh();
+  refreshServerLog();
+  setInterval(refresh, 1500);
+  setInterval(refreshServerLog, 1500);
+}
+
+$('loginForm').addEventListener('submit', submitLogin);
+$('loginPassword').focus();
+
+const imageViewer = $('imageViewer');
+const imageViewerImg = $('imageViewerImg');
+const imageViewerInfo = $('imageViewerInfo');
+const imageViewerInfoTitle = $('imageViewerInfoTitle');
+const imageViewerPrompt = $('imageViewerPrompt');
+const imageViewerDetails = $('imageViewerDetails');
+const imageViewerUseSource = $('imageViewerUseSource');
+const imageViewerLoadSettings = $('imageViewerLoadSettings');
+let viewerScale = 1;
+let viewerBaseWidth = 0;
+let viewerBaseHeight = 0;
+let viewerItems = [];
+let viewerIndex = -1;
+let viewerCurrentName = '';
+let viewerCurrentParams = null;
+let viewerInfoRequestSerial = 0;
+
+function closeImageViewer(){
+  imageViewer.classList.remove('open');
+  imageViewer.setAttribute('aria-hidden', 'true');
+  imageViewerImg.src = '';
+  imageViewerImg.style.width = '';
+  imageViewerImg.style.height = '';
+  imageViewerImg.style.transform = 'scale(1)';
+  viewerInfoRequestSerial += 1;
+  viewerCurrentName = '';
+  viewerCurrentParams = null;
+  imageViewerInfoTitle.textContent = '';
+  imageViewerPrompt.textContent = '';
+  imageViewerDetails.innerHTML = '';
+  viewerItems = [];
+  viewerIndex = -1;
+  viewerScale = 1;
+  viewerBaseWidth = 0;
+  viewerBaseHeight = 0;
+}
+
+function openImageViewer(url, name, items = [], index = -1){
+  imageViewer.classList.add('open');
+  imageViewer.setAttribute('aria-hidden', 'false');
+  viewerCurrentName = name || '';
+  viewerCurrentParams = null;
+  imageViewerInfoTitle.textContent = viewerCurrentName;
+  imageViewerPrompt.textContent = 'Loading image information…';
+  imageViewerDetails.innerHTML = '';
+  imageViewerUseSource.disabled = !viewerCurrentName;
+  imageViewerUseSource.textContent = selectedSourceImage === viewerCurrentName ? 'Selected for img2img' : 'Use for img2img';
+  imageViewerLoadSettings.disabled = true;
+  viewerItems = items;
+  viewerIndex = index;
+  viewerScale = 1;
+  imageViewerImg.style.transform = 'scale(1)';
+  imageViewerImg.onload = () => fitImageViewer();
+  imageViewerImg.src = url;
+  loadImageViewerInfo(viewerCurrentName);
+}
+
+async function loadImageViewerInfo(name){
+  const requestSerial = ++viewerInfoRequestSerial;
+  try {
+    const cached = outputCache.get(name);
+    const info = cached?.params && cached?.width && cached?.height
+      ? cached : await api(`/api/output-info/${encodeURIComponent(name)}`);
+    if (requestSerial !== viewerInfoRequestSerial || name !== viewerCurrentName) return;
+    viewerCurrentParams = info.params || {};
+    const resolution = info.width && info.height ? ` · ${info.width}×${info.height}` : '';
+    imageViewerInfoTitle.textContent = `${name}${resolution}`;
+    imageViewerPrompt.textContent = viewerCurrentParams.prompt || '';
+    imageViewerDetails.innerHTML = formatJobDetails(viewerCurrentParams);
+    imageViewerLoadSettings.disabled = false;
+  } catch (e) {
+    if (requestSerial !== viewerInfoRequestSerial || name !== viewerCurrentName) return;
+    imageViewerPrompt.textContent = `Image information unavailable: ${e.message}`;
+  }
+}
+
+function toggleImageViewerInfo(event){
+  event.stopPropagation();
+  const collapsed = imageViewerInfo.classList.toggle('collapsed');
+  $('imageViewerInfoToggle').textContent = collapsed ? 'v' : '^';
+  $('imageViewerInfoToggle').title = collapsed ? 'Expand image information' : 'Collapse image information';
+}
+
+function useViewerImageForImg2img(event){
+  event.stopPropagation();
+  if (!viewerCurrentName) return;
+  setSourceImage(viewerCurrentName);
+  imageViewerUseSource.textContent = 'Selected for img2img';
+}
+
+function applyViewerImageSettings(event){
+  event.stopPropagation();
+  if (!viewerCurrentParams) return;
+  loadParamsIntoForm(viewerCurrentParams);
+  closeImageViewer();
+}
+
+function cycleImageViewer(direction){
+  if (!imageViewer.classList.contains('open') || viewerIndex < 0 || viewerItems.length < 2) return;
+  viewerIndex = (viewerIndex + direction + viewerItems.length) % viewerItems.length;
+  const item = viewerItems[viewerIndex];
+  openImageViewer(item.href, item.name, viewerItems, viewerIndex);
+}
+
+function fitImageViewer(){
+  if (!imageViewerImg.naturalWidth || !imageViewerImg.naturalHeight) return;
+  const maxWidth = Math.max(1, window.innerWidth - 48);
+  const maxHeight = Math.max(1, window.innerHeight - 48);
+  const fitScale = Math.min(maxWidth / imageViewerImg.naturalWidth, maxHeight / imageViewerImg.naturalHeight, 1);
+  viewerBaseWidth = Math.max(1, Math.round(imageViewerImg.naturalWidth * fitScale));
+  viewerBaseHeight = Math.max(1, Math.round(imageViewerImg.naturalHeight * fitScale));
+  imageViewerImg.style.width = `${viewerBaseWidth}px`;
+  imageViewerImg.style.height = `${viewerBaseHeight}px`;
+  imageViewerImg.style.transform = `scale(${viewerScale})`;
+}
+
+function updateImageViewerZoom(deltaY){
+  if (!imageViewer.classList.contains('open')) return;
+  const direction = deltaY > 0 ? -1 : 1;
+  const next = viewerScale * (direction > 0 ? 1.12 : 1 / 1.12);
+  viewerScale = Math.min(8, Math.max(0.2, next));
+  imageViewerImg.style.transform = `scale(${viewerScale})`;
+}
+
+document.addEventListener('click', e => {
+  const imageLink = e.target.closest('a[data-output-name]');
+  if (imageLink && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey && e.button !== 1) {
+    const img = imageLink.querySelector('img');
+    if (!img) return;
+    e.preventDefault();
+    const scope = imageLink.closest('.all-outputs') || imageLink.closest('.job-images');
+    const links = scope ? Array.from(scope.querySelectorAll('a[data-output-name]')) : [imageLink];
+    const items = links.map(link => ({href: link.href, name: link.dataset.outputName || link.querySelector('img')?.alt || ''}));
+    const index = Math.max(0, items.findIndex(item => item.href === imageLink.href));
+    openImageViewer(imageLink.href, imageLink.dataset.outputName || img.alt || '', items, index);
+    return;
+  }
+  if (e.target === imageViewer || e.target === imageViewerImg) closeImageViewer();
+});
+
+document.addEventListener('wheel', e => {
+  if (!imageViewer.classList.contains('open')) return;
+  if (e.target.closest('#imageViewerInfo')) return;
+  e.preventDefault();
+  updateImageViewerZoom(e.deltaY);
+}, {passive:false});
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closeImageViewer();
+  if (e.key === 'ArrowLeft') cycleImageViewer(-1);
+  if (e.key === 'ArrowRight') cycleImageViewer(1);
+});
+
+window.addEventListener('resize', () => {
+  if (imageViewer.classList.contains('open')) fitImageViewer();
+});
+</script></body></html>

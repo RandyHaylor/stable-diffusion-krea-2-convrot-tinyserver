@@ -1,5 +1,379 @@
+diff --git a/examples/common/common.cpp b/examples/common/common.cpp
+index 3581215..4843cc3 100644
+--- a/examples/common/common.cpp
++++ b/examples/common/common.cpp
+@@ -1991,6 +1991,7 @@ bool SDGenerationParams::from_json_str(
+                                         sd_sample_params_t& target_params,
+                                         std::string& target_extra_sample_args,
+                                         std::vector<int>& target_skip_layers,
++                                        std::vector<int>& target_pag_layers,
+                                         std::vector<float>* target_custom_sigmas) {
+         if (sample_json.contains("sample_steps") && sample_json["sample_steps"].is_number_integer()) {
+             target_params.sample_steps = sample_json["sample_steps"];
+@@ -2024,6 +2025,24 @@ bool SDGenerationParams::from_json_str(
+                 target_params.scheduler = tmp;
+             }
+         }
++        if (sample_json.contains("pag") && sample_json["pag"].is_object()) {
++            const json& pag_json = sample_json["pag"];
++            if (pag_json.contains("enabled") && pag_json["enabled"].is_boolean()) {
++                target_params.pag.enabled = pag_json["enabled"];
++            }
++            if (pag_json.contains("scale") && pag_json["scale"].is_number()) {
++                target_params.pag.scale = pag_json["scale"];
++            }
++            if (pag_json.contains("layers") && pag_json["layers"].is_array()) {
++                target_pag_layers = pag_json["layers"].get<std::vector<int>>();
++            }
++            if (pag_json.contains("start") && pag_json["start"].is_number()) {
++                target_params.pag.start = pag_json["start"];
++            }
++            if (pag_json.contains("end") && pag_json["end"].is_number()) {
++                target_params.pag.end = pag_json["end"];
++            }
++        }
+         if (sample_json.contains("guidance") && sample_json["guidance"].is_object()) {
+             const json& guidance_json = sample_json["guidance"];
+             if (guidance_json.contains("txt_cfg") && guidance_json["txt_cfg"].is_number()) {
+@@ -2054,13 +2073,14 @@ bool SDGenerationParams::from_json_str(
+     };
+ 
+     if (j.contains("sample_params") && j["sample_params"].is_object()) {
+-        parse_sample_params_json(j["sample_params"], sample_params, extra_sample_args, skip_layers, &custom_sigmas);
++        parse_sample_params_json(j["sample_params"], sample_params, extra_sample_args, skip_layers, pag_layers, &custom_sigmas);
+     }
+     if (j.contains("high_noise_sample_params") && j["high_noise_sample_params"].is_object()) {
+         parse_sample_params_json(j["high_noise_sample_params"],
+                                  high_noise_sample_params,
+                                  high_noise_extra_sample_args,
+                                  high_noise_skip_layers,
++                                 high_noise_pag_layers,
+                                  nullptr);
+     }
+ 
+@@ -2521,6 +2541,10 @@ sd_img_gen_params_t SDGenerationParams::to_sd_img_gen_params_t() {
+     sample_params.guidance.slg.layer_count            = skip_layers.size();
+     high_noise_sample_params.guidance.slg.layers      = high_noise_skip_layers.empty() ? nullptr : high_noise_skip_layers.data();
+     high_noise_sample_params.guidance.slg.layer_count = high_noise_skip_layers.size();
++    sample_params.pag.layers                          = pag_layers.empty() ? nullptr : pag_layers.data();
++    sample_params.pag.layer_count                     = pag_layers.size();
++    high_noise_sample_params.pag.layers               = high_noise_pag_layers.empty() ? nullptr : high_noise_pag_layers.data();
++    high_noise_sample_params.pag.layer_count          = high_noise_pag_layers.size();
+     sample_params.custom_sigmas                       = custom_sigmas.empty() ? nullptr : custom_sigmas.data();
+     sample_params.custom_sigmas_count                 = static_cast<int>(custom_sigmas.size());
+     sample_params.extra_sample_args                   = extra_sample_args.empty() ? nullptr : extra_sample_args.c_str();
+@@ -2650,6 +2674,10 @@ sd_vid_gen_params_t SDGenerationParams::to_sd_vid_gen_params_t() {
+     sample_params.guidance.slg.layer_count            = skip_layers.size();
+     high_noise_sample_params.guidance.slg.layers      = high_noise_skip_layers.empty() ? nullptr : high_noise_skip_layers.data();
+     high_noise_sample_params.guidance.slg.layer_count = high_noise_skip_layers.size();
++    sample_params.pag.layers                          = pag_layers.empty() ? nullptr : pag_layers.data();
++    sample_params.pag.layer_count                     = pag_layers.size();
++    high_noise_sample_params.pag.layers               = high_noise_pag_layers.empty() ? nullptr : high_noise_pag_layers.data();
++    high_noise_sample_params.pag.layer_count          = high_noise_pag_layers.size();
+     sample_params.custom_sigmas                       = custom_sigmas.empty() ? nullptr : custom_sigmas.data();
+     sample_params.custom_sigmas_count                 = static_cast<int>(custom_sigmas.size());
+     sample_params.extra_sample_args                   = extra_sample_args.empty() ? nullptr : extra_sample_args.c_str();
+diff --git a/examples/common/common.h b/examples/common/common.h
+index 34b4a01..c3722b1 100644
+--- a/examples/common/common.h
++++ b/examples/common/common.h
+@@ -223,6 +223,8 @@ struct SDGenerationParams {
+     std::string high_noise_extra_sample_args;
+     std::vector<int> skip_layers            = {7, 8, 9};
+     std::vector<int> high_noise_skip_layers = {7, 8, 9};
++    std::vector<int> pag_layers;
++    std::vector<int> high_noise_pag_layers;
+ 
+     std::vector<float> custom_sigmas;
+ 
+diff --git a/examples/server/routes_sdcpp.cpp b/examples/server/routes_sdcpp.cpp
+index 7253dbf..e7bb6e8 100644
+--- a/examples/server/routes_sdcpp.cpp
++++ b/examples/server/routes_sdcpp.cpp
+@@ -77,7 +77,9 @@ static fs::path resolve_display_model_path(const ServerRuntime& runtime) {
+     return {};
+ }
+ 
+-static json make_sample_params_json(const sd_sample_params_t& sample_params, const std::vector<int>& skip_layers) {
++static json make_sample_params_json(const sd_sample_params_t& sample_params,
++                                    const std::vector<int>& skip_layers,
++                                    const std::vector<int>& pag_layers) {
+     const auto& guidance = sample_params.guidance;
+     return {
+         {"scheduler", capability_scheduler_name(sample_params.scheduler)},
+@@ -86,6 +88,14 @@ static json make_sample_params_json(const sd_sample_params_t& sample_params, con
+         {"eta", finite_number_or_null(sample_params.eta)},
+         {"shifted_timestep", sample_params.shifted_timestep},
+         {"flow_shift", finite_number_or_null(sample_params.flow_shift)},
++        {"pag",
++         {
++             {"enabled", sample_params.pag.enabled},
++             {"scale", sample_params.pag.scale},
++             {"layers", pag_layers},
++             {"start", sample_params.pag.start},
++             {"end", sample_params.pag.end},
++         }},
+         {"guidance",
+          {
+              {"txt_cfg", guidance.txt_cfg},
+@@ -131,7 +141,7 @@ static json make_img_gen_defaults_json(const SDGenerationParams& defaults, const
+         {"increase_ref_index", defaults.increase_ref_index},
+         {"control_strength", defaults.control_strength},
+         {"ip_adapter_strength", defaults.ip_adapter_strength},
+-        {"sample_params", make_sample_params_json(defaults.sample_params, defaults.skip_layers)},
++        {"sample_params", make_sample_params_json(defaults.sample_params, defaults.skip_layers, defaults.pag_layers)},
+         {"hires", make_hires_json(defaults)},
+         {"vae_tiling_params", make_vae_tiling_json(defaults.vae_tiling_params)},
+         {"cache_mode", defaults.cache_mode},
+@@ -156,8 +166,8 @@ static json make_vid_gen_defaults_json(const SDGenerationParams& defaults, const
+         {"fps", defaults.fps},
+         {"moe_boundary", defaults.moe_boundary},
+         {"vace_strength", defaults.vace_strength},
+-        {"sample_params", make_sample_params_json(defaults.sample_params, defaults.skip_layers)},
+-        {"high_noise_sample_params", make_sample_params_json(defaults.high_noise_sample_params, defaults.high_noise_skip_layers)},
++        {"sample_params", make_sample_params_json(defaults.sample_params, defaults.skip_layers, defaults.pag_layers)},
++        {"high_noise_sample_params", make_sample_params_json(defaults.high_noise_sample_params, defaults.high_noise_skip_layers, defaults.high_noise_pag_layers)},
+         {"hires", make_hires_json(defaults)},
+         {"vae_tiling_params", make_vae_tiling_json(defaults.vae_tiling_params)},
+         {"cache_mode", defaults.cache_mode},
+@@ -181,7 +191,7 @@ static json make_img_gen_features_json() {
+         {"hires", true},
+         {"cache", true},
+         {"cancel_queued", true},
+-        {"cancel_generating", false},
++        {"cancel_generating", true},
+     };
+ }
+ 
+@@ -195,7 +205,7 @@ static json make_vid_gen_features_json() {
+         {"vae_tiling", true},
+         {"cache", true},
+         {"cancel_queued", true},
+-        {"cancel_generating", false},
++        {"cancel_generating", true},
+     };
+ }
+ 
+@@ -307,7 +317,7 @@ static json make_capabilities_json(ServerRuntime& runtime) {
+     json top_level_output_formats = json::array();
+     json top_level_features       = {
+               {"cancel_queued", true},
+-              {"cancel_generating", false},
++              {"cancel_generating", true},
+     };
+     std::string current_mode = "";
+     if (supports_img) {
+@@ -413,6 +423,14 @@ void register_sdcpp_api_endpoints(httplib::Server& svr, ServerRuntime& rt) {
+         res.set_content(make_capabilities_json(*runtime).dump(), "application/json");
+     });
+ 
++    svr.Post("/sdcpp/v1/cancel", [runtime](const httplib::Request&, httplib::Response& res) {
++        // sd_cancel_generation only updates an atomic flag; it must not wait on
++        // sd_ctx_mutex, which is held by the active generation worker.
++        sd_cancel_generation(runtime->sd_ctx, SD_CANCEL_ALL);
++        res.status = 200;
++        res.set_content(R"({"status":"cancelling"})", "application/json");
++    });
++
+     svr.Post("/sdcpp/v1/img_gen", [runtime](const httplib::Request& req, httplib::Response& res) {
+         try {
+             if (req.body.empty()) {
+diff --git a/include/stable-diffusion.h b/include/stable-diffusion.h
+index bab62ba..7348611 100644
+--- a/include/stable-diffusion.h
++++ b/include/stable-diffusion.h
+@@ -266,6 +266,15 @@ typedef struct {
+     float scale;
+ } sd_slg_params_t;
+ 
++typedef struct {
++    bool enabled;
++    float scale;
++    int* layers;
++    size_t layer_count;
++    float start;
++    float end;
++} sd_pag_params_t;
++
+ typedef struct {
+     float txt_cfg;
+     float img_cfg;
+@@ -283,6 +292,7 @@ typedef struct {
+     float* custom_sigmas;
+     int custom_sigmas_count;
+     float flow_shift;
++    sd_pag_params_t pag;
+     const char* extra_sample_args;
+ } sd_sample_params_t;
+ 
+diff --git a/src/model/diffusion/krea2.hpp b/src/model/diffusion/krea2.hpp
+index b3947b7..b114f27 100644
+--- a/src/model/diffusion/krea2.hpp
++++ b/src/model/diffusion/krea2.hpp
+@@ -261,7 +261,8 @@ namespace Krea2 {
+         ggml_tensor* forward(GGMLRunnerContext* ctx,
+                              ggml_tensor* x,
+                              ggml_tensor* pe   = nullptr,
+-                             ggml_tensor* mask = nullptr) {
++                             ggml_tensor* mask = nullptr,
++                             bool identity     = false) {
+             auto wq    = std::dynamic_pointer_cast<Linear>(blocks["wq"]);
+             auto wk    = std::dynamic_pointer_cast<Linear>(blocks["wk"]);
+             auto wv    = std::dynamic_pointer_cast<Linear>(blocks["wv"]);
+@@ -277,18 +278,26 @@ namespace Krea2 {
+             int64_t L = x->ne[1];
+             int64_t N = x->ne[2];
+ 
+-            auto q = wq->forward(ctx, x);
+-            q      = ggml_reshape_4d(ctx->ggml_ctx, q, head_dim_, heads, L, N);
+-            auto k = wk->forward(ctx, x);
+-            k      = ggml_reshape_4d(ctx->ggml_ctx, k, head_dim_, kv_heads, L, N);
+             auto v = wv->forward(ctx, x);
+             v      = ggml_reshape_4d(ctx->ggml_ctx, v, head_dim_, kv_heads, L, N);
+ 
+-            q = qnorm->forward(ctx, q);
+-            k = knorm->forward(ctx, k);
+-
+-            auto out = pe != nullptr ? Rope::attention(ctx, q, k, v, pe, mask)
+-                                     : attention_no_rope(ctx, q, k, v, mask);
++            ggml_tensor* out = nullptr;
++            if (identity) {
++                GGML_ASSERT(heads % kv_heads == 0);
++                v   = ggml_reshape_4d(ctx->ggml_ctx, v, head_dim_, 1, kv_heads, L * N);
++                out = ggml_repeat_4d(ctx->ggml_ctx, v, head_dim_, heads / kv_heads, kv_heads, L * N);
++                out = ggml_reshape_3d(ctx->ggml_ctx, out, features, L, N);
++            } else {
++                auto q = wq->forward(ctx, x);
++                q      = ggml_reshape_4d(ctx->ggml_ctx, q, head_dim_, heads, L, N);
++                auto k = wk->forward(ctx, x);
++                k      = ggml_reshape_4d(ctx->ggml_ctx, k, head_dim_, kv_heads, L, N);
++
++                q = qnorm->forward(ctx, q);
++                k = knorm->forward(ctx, k);
++                out = pe != nullptr ? Rope::attention(ctx, q, k, v, pe, mask)
++                                    : attention_no_rope(ctx, q, k, v, mask);
++            }
+             out      = ggml_mul(ctx->ggml_ctx, out, ggml_sigmoid(ctx->ggml_ctx, gate->forward(ctx, x)));
+             out      = wo->forward(ctx, out);
+             return out;
+@@ -436,7 +445,8 @@ namespace Krea2 {
+                              ggml_tensor* vec,
+                              ggml_tensor* pe,
+                              ggml_tensor* vec_refs = nullptr,
+-                             int64_t ref_start     = -1) {
++                             int64_t ref_start     = -1,
++                             bool identity_attn   = false) {
+             auto mod      = std::dynamic_pointer_cast<KreaDoubleSharedModulation>(blocks["mod"]);
+             auto prenorm  = std::dynamic_pointer_cast<KreaRMSNorm>(blocks["prenorm"]);
+             auto postnorm = std::dynamic_pointer_cast<KreaRMSNorm>(blocks["postnorm"]);
+@@ -467,7 +477,7 @@ namespace Krea2 {
+ 
+                 auto attn_input = ggml_concat(ctx->ggml_ctx, attn_in_main, attn_in_refs, 1);
+ 
+-                auto attn_out = attn->forward(ctx, attn_input, pe);
++                auto attn_out = attn->forward(ctx, attn_input, pe, nullptr, identity_attn);
+ 
+                 auto attn_out_main = ggml_view_3d(ctx->ggml_ctx, attn_out, D, len_main, B, attn_out->nb[1], attn_out->nb[2], 0);
+                 auto attn_out_refs = ggml_view_3d(ctx->ggml_ctx, attn_out, D, len_refs, B, attn_out->nb[1], attn_out->nb[2], len_main * attn_out->nb[1]);
+@@ -505,7 +515,7 @@ namespace Krea2 {
+                                                  mods[1],
+                                                  mods[0],
+                                                  true);
+-                auto attn_out   = attn->forward(ctx, attn_input, pe);
++                auto attn_out   = attn->forward(ctx, attn_input, pe, nullptr, identity_attn);
+                 x               = ggml_add(ctx->ggml_ctx, x, ggml_mul(ctx->ggml_ctx, attn_out, mods[2]));
+ 
+                 auto mlp_input = Flux::modulate(ctx->ggml_ctx,
+@@ -629,7 +639,9 @@ namespace Krea2 {
+                              ggml_tensor* context,
+                              ggml_tensor* pe,
+                              std::vector<ggml_tensor*> ref_latents = {},
+-                             bool zero_timestep_refs               = false) {
++                             bool zero_timestep_refs               = false,
++                             const std::vector<int>* pag_layers    = nullptr,
++                             bool pag_pass                         = false) {
+             int64_t W = x->ne[0];
+             int64_t H = x->ne[1];
+             int64_t N = x->ne[3];
+@@ -676,7 +688,9 @@ namespace Krea2 {
+             int64_t ref_start  = hidden_states->ne[1] - ref_len;
+             for (int i = 0; i < config.layers; ++i) {
+                 auto block    = std::dynamic_pointer_cast<KreaSingleStreamBlock>(blocks["blocks." + std::to_string(i)]);
+-                hidden_states = block->forward(ctx, hidden_states, tvec, pe, tvec_0, ref_start);
++                bool identity_attn = pag_pass && pag_layers != nullptr &&
++                                     std::find(pag_layers->begin(), pag_layers->end(), i) != pag_layers->end();
++                hidden_states = block->forward(ctx, hidden_states, tvec, pe, tvec_0, ref_start, identity_attn);
+                 sd::ggml_graph_cut::mark_graph_cut(hidden_states, "krea2.blocks." + std::to_string(i), "hidden_states");
+             }
+ 
+@@ -733,7 +747,9 @@ namespace Krea2 {
+                                  const sd::Tensor<float>& timesteps_tensor,
+                                  const sd::Tensor<float>& context_tensor,
+                                  const std::vector<sd::Tensor<float>>& ref_latents_tensor = {},
+-                                 const RefImageParams& ref_image_params                   = REF_IMAGE_PRESETS.at("krea2_ostris_edit")) {
++                                 const RefImageParams& ref_image_params                   = REF_IMAGE_PRESETS.at("krea2_ostris_edit"),
++                                 const std::vector<int>* pag_layers                       = nullptr,
++                                 bool pag_pass                                             = false) {
+             ggml_cgraph* gf        = new_graph_custom(KREA2_GRAPH_SIZE);
+             ggml_tensor* x         = make_input(x_tensor);
+             ggml_tensor* timesteps = make_input(timesteps_tensor);
+@@ -761,7 +777,15 @@ namespace Krea2 {
+             set_backend_tensor_data(pe, pe_vec.data());
+ 
+             auto runner_ctx  = get_context();
+-            ggml_tensor* out = model.forward(&runner_ctx, x, timesteps, context, pe, ref_latents, ref_image_params.force_ref_timestep_zero);
++            ggml_tensor* out = model.forward(&runner_ctx,
++                                             x,
++                                             timesteps,
++                                             context,
++                                             pe,
++                                             ref_latents,
++                                             ref_image_params.force_ref_timestep_zero,
++                                             pag_layers,
++                                             pag_pass);
+             ggml_build_forward_expand(gf, out);
+             return gf;
+         }
+@@ -771,9 +795,11 @@ namespace Krea2 {
+                                   const sd::Tensor<float>& timesteps,
+                                   const sd::Tensor<float>& context,
+                                   const std::vector<sd::Tensor<float>>& ref_latents = {},
+-                                  const RefImageParams& ref_image_params            = REF_IMAGE_PRESETS.at("krea2_ostris_edit")) {
++                                  const RefImageParams& ref_image_params            = REF_IMAGE_PRESETS.at("krea2_ostris_edit"),
++                                  const std::vector<int>* pag_layers                = nullptr,
++                                  bool pag_pass                                      = false) {
+             auto get_graph = [&]() -> ggml_cgraph* {
+-                return build_graph(x, timesteps, context, ref_latents, ref_image_params);
++                return build_graph(x, timesteps, context, ref_latents, ref_image_params, pag_layers, pag_pass);
+             };
+             return restore_trailing_singleton_dims(GGMLRunner::compute<float>(get_graph, n_threads, false, false, false), x.dim());
+         }
+@@ -788,7 +814,9 @@ namespace Krea2 {
+                            *diffusion_params.timesteps,
+                            tensor_or_empty(diffusion_params.context),
+                            diffusion_params.ref_latents && diffusion_params.ref_image_params.pass_to_dit ? *diffusion_params.ref_latents : empty_ref_latents,
+-                           diffusion_params.ref_image_params);
++                           diffusion_params.ref_image_params,
++                           diffusion_params.pag_layers,
++                           diffusion_params.pag_pass);
+         }
+     };
+ }  // namespace Krea2
+diff --git a/src/model/diffusion/model.hpp b/src/model/diffusion/model.hpp
+index 070ca53..fd65ceb 100644
+--- a/src/model/diffusion/model.hpp
++++ b/src/model/diffusion/model.hpp
+@@ -141,6 +141,8 @@ struct DiffusionParams {
+     const sd::Tensor<float>* y                        = nullptr;
+     const std::vector<sd::Tensor<float>>* ref_latents = nullptr;
+     RefImageParams ref_image_params                   = {false, false, Rope::RefIndexMode::FIXED, false};
++    const std::vector<int>* pag_layers                 = nullptr;
++    bool pag_pass                                      = false;
+     DiffusionExtraParams extra                        = std::monostate{};
+ };
+ 
 diff --git a/src/model_io/safetensors_io.cpp b/src/model_io/safetensors_io.cpp
-index 5c1128d..609f41b 100644
+index 69bcaa1..5eeda8d 100644
 --- a/src/model_io/safetensors_io.cpp
 +++ b/src/model_io/safetensors_io.cpp
 @@ -106,6 +106,14 @@ struct ComfyQuantConfig {
@@ -35,3 +409,229 @@ index 5c1128d..609f41b 100644
                  tensor_storage.n_dims == 2 && tensor_storage.ne[0] == 1) {
                  tensor_storage.ne[0]  = tensor_storage.ne[1];
                  tensor_storage.ne[1]  = 1;
+diff --git a/src/stable-diffusion.cpp b/src/stable-diffusion.cpp
+index 7370f6a..dc2205e 100644
+--- a/src/stable-diffusion.cpp
++++ b/src/stable-diffusion.cpp
+@@ -2516,6 +2516,7 @@ public:
+                              const sd::Tensor<float>& control_image,
+                              float control_strength,
+                              const sd_guidance_params_t& guidance,
++                             const sd_pag_params_t& pag,
+                              float eta,
+                              int shifted_timestep,
+                              sample_method_t method,
+@@ -2548,6 +2549,15 @@ public:
+         float img_cfg_scale = guidance.img_cfg;
+         float slg_scale     = guidance.slg.scale;
+         bool slg_uncond     = sd::guidance::parse_skip_layer_guidance_uncond_arg(extra_sample_args);
++        std::vector<int> pag_layers;
++        if (pag.layers != nullptr && pag.layer_count > 0) {
++            pag_layers.assign(pag.layers, pag.layers + pag.layer_count);
++        }
++        bool has_pag = pag.enabled && pag.scale != 0.f && !pag_layers.empty();
++        if (has_pag && !sd_version_is_krea2(version)) {
++            has_pag = false;
++            LOG_WARN("PAG is currently supported only for Krea 2 models");
++        }
+ 
+         std::vector<float> guidance_schedule = sd::guidance::parse_guidance_schedule(extra_sample_args);
+         if (!guidance_schedule.empty() && guidance_schedule.size() != sigmas.size() - 1) {
+@@ -2687,6 +2697,7 @@ public:
+             }
+ 
+             sd::Tensor<float> cond_out;
++            sd::Tensor<float> pag_out;
+             sd::Tensor<float> uncond_out;
+             sd::Tensor<float> img_uncond_out;
+             sd_sample::SampleStepCacheDispatcher step_cache(cache_runtime, step, sigma);
+@@ -2699,6 +2710,9 @@ public:
+             step_guidance_input.step          = step;
+             step_guidance_input.schedule_size = sigmas.size();
+             bool is_skiplayer_step            = skip_layer_guidance.is_enabled_for_step(step_guidance_input);
++            int pag_step_index                 = std::max(0, std::abs(step) - 1);
++            float pag_progress                 = steps > 1 ? static_cast<float>(pag_step_index) / static_cast<float>(steps - 1) : 0.f;
++            bool is_pag_step                   = has_pag && pag_progress >= pag.start && pag_progress <= pag.end;
+ 
+             compute_sample_controls(control_image,
+                                     noised_input,
+@@ -2715,11 +2729,15 @@ public:
+                                      const sd::Tensor<float>* c_concat_override                 = nullptr,
+                                      const std::vector<int>* local_skip_layers                  = nullptr,
+                                      const std::vector<sd::Tensor<float>>* ref_latents_override = nullptr,
+-                                     bool use_uncond_ip                                         = false) -> sd::Tensor<float> {
++                                     bool use_uncond_ip                                         = false,
++                                     bool pag_pass                                              = false,
++                                     bool bypass_cache                                          = false) -> sd::Tensor<float> {
+                 diffusion_params.context     = condition.c_crossattn.empty() ? nullptr : &condition.c_crossattn;
+                 diffusion_params.c_concat    = c_concat_override != nullptr ? c_concat_override : (condition.c_concat.empty() ? nullptr : &condition.c_concat);
+                 diffusion_params.y           = condition.c_vector.empty() ? nullptr : &condition.c_vector;
+                 diffusion_params.ref_latents = ref_latents_override != nullptr ? ref_latents_override : (condition.c_ref_images.empty() ? &ref_latents : &condition.c_ref_images);
++                diffusion_params.pag_layers  = pag_pass ? &pag_layers : nullptr;
++                diffusion_params.pag_pass    = pag_pass;
+ 
+                 if (sd_version_is_unet(version)) {
+                     int nvf = -1;
+@@ -2781,7 +2799,7 @@ public:
+                 }
+ 
+                 sd::Tensor<float> cached_output;
+-                if (step_cache.before_condition(&condition, noised_input, &cached_output)) {
++                if (!bypass_cache && step_cache.before_condition(&condition, noised_input, &cached_output)) {
+                     return std::move(cached_output);
+                 }
+ 
+@@ -2795,7 +2813,9 @@ public:
+                     return sd::Tensor<float>();
+                 }
+ 
+-                step_cache.after_condition(&condition, noised_input, output_opt);
++                if (!bypass_cache) {
++                    step_cache.after_condition(&condition, noised_input, output_opt);
++                }
+                 return output_opt;
+             };
+ 
+@@ -2812,11 +2832,31 @@ public:
+                 }
+             }
+ 
+-            cond_out = run_condition(*positive_condition, c_concat_override);
++            cond_out = run_condition(*positive_condition,
++                                     c_concat_override,
++                                     nullptr,
++                                     nullptr,
++                                     false,
++                                     false,
++                                     is_pag_step);
+             if (cond_out.empty()) {
+                 return {};
+             }
+ 
++            if (is_pag_step) {
++                LOG_DEBUG("Applying PAG at step %d\n", step);
++                pag_out = run_condition(*positive_condition,
++                                        c_concat_override,
++                                        nullptr,
++                                        nullptr,
++                                        false,
++                                        true,
++                                        true);
++                if (pag_out.empty()) {
++                    return {};
++                }
++            }
++
+             if (!uncond.empty()) {
+                 if (!step_cache.is_step_skipped()) {
+                     compute_sample_controls(control_image,
+@@ -2834,7 +2874,9 @@ public:
+                                            uncond.c_concat.empty() ? nullptr : &uncond.c_concat,
+                                            uncond_skip_layers,
+                                            nullptr,
+-                                           true);
++                                           true,
++                                           false,
++                                           is_pag_step);
+                 if (uncond_out.empty()) {
+                     return {};
+                 }
+@@ -2844,7 +2886,9 @@ public:
+                                                img_uncond.c_concat.empty() ? nullptr : &img_uncond.c_concat,
+                                                nullptr,
+                                                uncond_without_ref_latents ? &empty_ref_latents : nullptr,
+-                                               true);
++                                               true,
++                                               false,
++                                               is_pag_step);
+                 if (img_uncond_out.empty()) {
+                     return {};
+                 }
+@@ -2861,6 +2905,10 @@ public:
+                 return {};
+             }
+ 
++            if (!pag_out.empty()) {
++                guided.pred += (cond_out - pag_out) * pag.scale;
++            }
++
+             if (is_skiplayer_step && slg_scale != 0.0f) {
+                 LOG_DEBUG("Skipping layers at step %d\n", step);
+                 if (!step_cache.is_step_skipped()) {
+@@ -3669,6 +3717,12 @@ void sd_sample_params_init(sd_sample_params_t* sample_params) {
+     sample_params->custom_sigmas               = nullptr;
+     sample_params->custom_sigmas_count         = 0;
+     sample_params->flow_shift                  = INFINITY;
++    sample_params->pag.enabled                 = false;
++    sample_params->pag.scale                   = 1.f;
++    sample_params->pag.layers                  = nullptr;
++    sample_params->pag.layer_count             = 0;
++    sample_params->pag.start                   = 0.f;
++    sample_params->pag.end                     = 1.f;
+     sample_params->extra_sample_args           = nullptr;
+ }
+ 
+@@ -3686,6 +3740,11 @@ char* sd_sample_params_to_str(const sd_sample_params_t* sample_params) {
+              "slg.layer_start: %.2f, "
+              "slg.layer_end: %.2f, "
+              "slg.scale: %.2f, "
++             "pag.enabled: %s, "
++             "pag.scale: %.2f, "
++             "pag.layer_count: %zu, "
++             "pag.start: %.2f, "
++             "pag.end: %.2f, "
+              "scheduler: %s, "
+              "sample_method: %s, "
+              "sample_steps: %d, "
+@@ -3702,6 +3761,11 @@ char* sd_sample_params_to_str(const sd_sample_params_t* sample_params) {
+              sample_params->guidance.slg.layer_start,
+              sample_params->guidance.slg.layer_end,
+              sample_params->guidance.slg.scale,
++             BOOL_STR(sample_params->pag.enabled),
++             sample_params->pag.scale,
++             sample_params->pag.layer_count,
++             sample_params->pag.start,
++             sample_params->pag.end,
+              sd_scheduler_name(sample_params->scheduler),
+              sd_sample_method_name(sample_params->sample_method),
+              sample_params->sample_steps,
+@@ -5698,6 +5762,7 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
+                                                    latents.control_image,
+                                                    request.control_strength,
+                                                    request.guidance,
++                                                   sd_img_gen_params->sample_params.pag,
+                                                    plan.eta,
+                                                    request.shifted_timestep,
+                                                    plan.sample_method,
+@@ -5819,6 +5884,7 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
+                                                             latents.control_image,
+                                                             request.control_strength,
+                                                             request.guidance,
++                                                            sd_pag_params_t{},
+                                                             plan.eta,
+                                                             request.shifted_timestep,
+                                                             plan.sample_method,
+@@ -6952,6 +7018,7 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
+                                                            sd::Tensor<float>(),
+                                                            0.f,
+                                                            request.high_noise_guidance,
++                                                           sd_vid_gen_params->high_noise_sample_params.pag,
+                                                            plan.high_noise_eta,
+                                                            request.shifted_timestep,
+                                                            plan.high_noise_sample_method,
+@@ -6994,6 +7061,7 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
+                                                         sd::Tensor<float>(),
+                                                         0.f,
+                                                         sd_vid_gen_params->sample_params.guidance,
++                                                        sd_vid_gen_params->sample_params.pag,
+                                                         plan.eta,
+                                                         sd_vid_gen_params->sample_params.shifted_timestep,
+                                                         plan.sample_method,
+@@ -7132,6 +7200,7 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
+                                             sd::Tensor<float>(),
+                                             0.f,
+                                             sd_vid_gen_params->sample_params.guidance,
++                                            sd_pag_params_t{},
+                                             hires_eta,
+                                             sd_vid_gen_params->sample_params.shifted_timestep,
+                                             hires_sample_method,

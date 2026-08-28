@@ -31,7 +31,8 @@ for _ in {1..240}; do
         echo "Run run-krea.sh or run-krea-turbo.sh to generate images."
         echo "Run krea-server.sh stop when you want to release VRAM."
         echo
-        read -r -p "Press Enter to close this window..." || true
+        echo "Following server output from ${ROOT_DIR}/.runtime/krea-server.log"
+        tail -n 80 -F "${ROOT_DIR}/.runtime/krea-server.log"
         exit 0
     fi
     if [[ "$status" == stopped* ]]; then
@@ -40,7 +41,6 @@ for _ in {1..240}; do
         echo "The server exited before becoming ready. Recent log output:"
         tail -80 "${ROOT_DIR}/.runtime/krea-server.log" 2>/dev/null || true
         echo
-        read -r -p "Press Enter to close this window..." || true
         exit 1
     fi
     sleep 1
@@ -49,5 +49,5 @@ done
 echo
 echo
 echo "Timed out waiting for the server. Inspect .runtime/krea-server.log."
-read -r -p "Press Enter to close this window..." || true
+tail -n 80 "${ROOT_DIR}/.runtime/krea-server.log" 2>/dev/null || true
 exit 1

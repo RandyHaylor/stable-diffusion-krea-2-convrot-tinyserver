@@ -8,6 +8,8 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
+from image_metadata import cached_civitai_hash, embed_generation_metadata
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Generate with the persistent Krea server")
@@ -46,6 +48,8 @@ def main() -> int:
     )
     parser.add_argument("--lora", type=Path)
     parser.add_argument("--lora-strength", type=float, default=1.0)
+    parser.add_argument("--model-name", default="", help="model filename to store in PNG metadata")
+    parser.add_argument("--model-file", type=Path, help="model file used to calculate its Civitai hash")
     parser.add_argument("--output-prefix", default="krea")
     parser.add_argument("--output-dir", type=Path, default=Path("outputs"))
     args = parser.parse_args()
@@ -62,6 +66,7 @@ def main() -> int:
         "sampler_name": args.sampler,
         "scheduler": args.scheduler,
         "lora": [],
+        "model_name": args.model_name,
     }
     sample_params = {
         "sample_method": args.sampler,
@@ -98,6 +103,11 @@ def main() -> int:
         payload["lora"] = [
             {"path": args.lora.name, "multiplier": args.lora_strength, "is_high_noise": False}
         ]
+    if args.model_file:
+        payload["model_hash"] = cached_civitai_hash(args.model_file)
+    payload["lora_hashes"] = ([
+        f"{args.lora.stem}:{cached_civitai_hash(args.lora)}"
+    ] if args.lora else [])
 
     request = urllib.request.Request(
         f"http://{args.host}:{args.port}/sdapi/v1/txt2img",
@@ -126,7 +136,8 @@ def main() -> int:
         if encoded.startswith("data:"):
             encoded = encoded.split(",", 1)[1]
         output = args.output_dir / f"{args.output_prefix}-{stamp}-{index}.png"
-        output.write_bytes(base64.b64decode(encoded))
+        image_bytes = base64.b64decode(encoded)
+        output.write_bytes(embed_generation_metadata(image_bytes, payload))
         print(output.resolve())
     return 0
 

@@ -7,3 +7,6 @@ __pycache__/
 *.gguf
 build/
 models/
+*.hash
+.env
+.env.*

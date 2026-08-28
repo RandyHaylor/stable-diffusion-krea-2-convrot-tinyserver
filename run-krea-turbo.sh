@@ -36,9 +36,9 @@ client=(python3 "${ROOT_DIR}/scripts/krea_server_client.py" \
     "$1" \
     --host "${KREA_SERVER_HOST:-127.0.0.1}" \
     --port "${KREA_SERVER_PORT:-1234}" \
-    --width "${KREA_WIDTH:-1024}" \
-    --height "${KREA_HEIGHT:-1024}" \
-    --steps "${KREA_STEPS:-6}" \
+    --width "${KREA_WIDTH:-1792}" \
+    --height "${KREA_HEIGHT:-1792}" \
+    --steps "${KREA_STEPS:-8}" \
     --cfg "${KREA_CFG:-1.0}" \
     --seed "${KREA_SEED:-0}" \
     --sampler "${KREA_SAMPLER:-res_2s}" \
@@ -52,7 +52,7 @@ client=(python3 "${ROOT_DIR}/scripts/krea_server_client.py" \
     --hires-upscaler "${KREA_HIRES_UPSCALER:-Latent}" \
     --lora "$LORA" \
     --lora-strength "${KREA_LORA_STRENGTH:-0.6}" \
-    --output-prefix "krea-turbo" \
+    --output-prefix "${KREA_OUTPUT_PREFIX:-krea-turbo}" \
     --output-dir "${KREA_OUTPUT_DIR:-${ROOT_DIR}/outputs}" \
     "${@:2}")
 
