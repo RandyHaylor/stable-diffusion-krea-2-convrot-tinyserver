@@ -95,7 +95,7 @@ def embed_generation_metadata(image_bytes: bytes, payload: dict[str, Any]) -> by
         metadata_payload["img2img"] = {
             "source_image": source_image,
             "denoising_strength": metadata_payload.get(
-                "denoising_strength", ui_params.get("img2img_denoise", 0.75)
+                "denoising_strength", ui_params.get("img2img_denoise", 0.0)
             ),
         }
 

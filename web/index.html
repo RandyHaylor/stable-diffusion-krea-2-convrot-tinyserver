@@ -226,9 +226,6 @@ button.danger{background:#49252a;border-color:#813942}
     <div><label for="hires_upscaler">Hires upscaler</label><div class="combo" data-field="hires_upscaler"></div></div>
     <div><label for="vae_tile_size">VAE tile size (latent; 32 = 256px)</label><div class="combo" data-field="vae_tile_size"></div></div>
   </div>
-  <label for="img2img_denoise">Img2img denoise strength</label>
-  <div class="combo" data-field="img2img_denoise"></div>
-
 </section>
 
 <section class="panel results-workspace">
@@ -246,6 +243,10 @@ button.danger{background:#49252a;border-color:#813942}
         <button type="button" onclick="chooseSourceImage()">Load source image</button>
         <input id="sourceImageFile" type="file" accept="image/png,image/jpeg,.png,.jpg,.jpeg" hidden>
       </div>
+    </div>
+    <div class="fields two img2img-settings">
+      <div><label for="img2img_denoise">Img2img denoise strength</label><div class="combo" data-field="img2img_denoise"></div></div>
+      <div><label for="img2img_noise_add">Img2img noise add</label><div class="combo" data-field="img2img_noise_add"></div></div>
     </div>
   </div>
   <div class="result-tabs" role="tablist" aria-label="Queue and output views">
@@ -286,9 +287,10 @@ const COMBO_FIELDS = {
   hires_denoise:   {value:'0.5', step:0.05, options:['0.35','0.5','0.65']},
   hires_upscaler:  {value:'Latent', options:[]},
   vae_tile_size:   {value:'32',  step:1,    options:['32','64','68','128','256','512']},
-  img2img_denoise: {value:'0.75', step:0.05, options:['0.35','0.5','0.65','0.75','0.9']},
+  img2img_denoise: {value:'0', step:0.05, options:['0','0.15','0.35','0.5','0.65','0.75','0.9']},
+  img2img_noise_add: {value:'0', step:0.05, options:['0','0.1','0.25','0.5','0.75','1']},
 };
-const NUMERIC_FIELDS = ['seed','steps','cfg','flow_shift','pag_scale','pag_start','pag_end','hires_steps','hires_denoise','vae_tile_size','img2img_denoise'];
+const NUMERIC_FIELDS = ['seed','steps','cfg','flow_shift','pag_scale','pag_start','pag_end','hires_steps','hires_denoise','vae_tile_size','img2img_denoise','img2img_noise_add'];
 const TEXT_FIELDS = ['sampler','scheduler','hires_upscaler','extra_sample_args','pag_layers'];
 
 let presets = {};
@@ -571,6 +573,7 @@ function formatJobDetails(params){
     ['Generation', generationType],
     ['Img2img source', generationType === 'img2img' ? (p.source_image || '') : ''],
     ['Img2img denoise', generationType === 'img2img' ? (p.img2img_denoise ?? '') : ''],
+    ['Img2img noise add', generationType === 'img2img' ? (p.img2img_noise_add ?? '') : ''],
     ['Hires pass', p.hires ? 'On' : 'Off'],
     ['Hires resolution', p.hires ? `${p.hires_width || ''}×${p.hires_height || ''}` : ''],
     ['Hires steps', p.hires ? (p.hires_steps ?? '') : ''],
@@ -634,6 +637,7 @@ function loadParamsIntoForm(p){
   if (p.img2img && typeof p.img2img === 'object') {
     p.source_image = p.source_image || p.img2img.source_image || '';
     p.img2img_denoise = p.img2img_denoise ?? p.img2img.denoising_strength;
+    p.img2img_noise_add = p.img2img_noise_add ?? p.img2img.noise_add;
   }
   p.prompt = p.prompt || p.ui_prompt || '';
   p.cfg = p.cfg ?? p.cfg_scale;
@@ -646,7 +650,7 @@ function loadParamsIntoForm(p){
   ['prompt','negative_prompt'].forEach(id => { if ($(id)) $(id).value = p[id] || ''; });
   $('extra_sample_args').value = p.extra_sample_args || p.krea_extra_sample_args || '';
   ['resolution','seed','steps','cfg','sampler','scheduler','flow_shift','pag_scale','pag_start','pag_end','pag_layers','hires_resolution',
-   'hires_steps','hires_denoise','hires_upscaler','vae_tile_size','img2img_denoise'].forEach(id => {
+   'hires_steps','hires_denoise','hires_upscaler','vae_tile_size','img2img_denoise','img2img_noise_add'].forEach(id => {
     if ($(id) && p[id] !== undefined) $(id).value = p[id];
   });
   $('hires').checked = !!p.hires;

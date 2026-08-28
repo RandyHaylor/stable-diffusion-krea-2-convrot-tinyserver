@@ -129,8 +129,9 @@ def read_generation_metadata(image: Image.Image) -> tuple[dict, str, dict]:
         custom_img2img = {
             "source_image": source_image,
             "denoising_strength": metadata.get(
-                "img2img_denoise", custom_img2img.get("denoising_strength", 0.75)
+                "img2img_denoise", custom_img2img.get("denoising_strength", 0.0)
             ),
+            "noise_add": metadata.get("img2img_noise_add", custom_img2img.get("noise_add", 0.0)),
         }
     metadata["generation_type"] = generation_type
     return metadata, generation_type, custom_img2img
@@ -408,7 +409,12 @@ class QueueManager:
             if source_path.parent != OUTPUT_DIR.resolve() or not source_path.is_file():
                 raise RuntimeError(f"img2img source image not found: {source_name}")
             payload["init_images"] = [base64.b64encode(source_path.read_bytes()).decode("ascii")]
-            payload["denoising_strength"] = float(p.get("img2img_denoise", 0.75))
+            payload["denoising_strength"] = float(p.get("img2img_denoise", 0.0))
+            noise_add = max(0.0, min(1.0, float(p.get("img2img_noise_add", 0.0))))
+            extra_args = str(payload.get("extra_sample_args", "")).strip()
+            if extra_args:
+                extra_args += ","
+            payload["extra_sample_args"] = f"{extra_args}img2img_noise_add={noise_add:g}"
             endpoint = "/sdapi/v1/img2img"
         result = self.post_json_to_backend(endpoint, payload, timeout=7200)
         images = result.get("images", [])
