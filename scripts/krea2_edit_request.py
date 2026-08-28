@@ -23,6 +23,8 @@ from typing import Callable
 REF_IMAGE_PRESET_NAME = "krea2_edit"
 DEFAULT_GROUNDING_PIXELS = 768
 NEUTRAL_REFERENCE_FIDELITY = 1.0
+REFERENCE_FIT_MODES = ("fit", "crop")
+DEFAULT_REFERENCE_FIT_MODE = "fit"
 
 
 def is_krea2_edit_enabled(params: dict) -> bool:
@@ -51,8 +53,25 @@ def krea2_edit_references(params: dict) -> list[dict]:
     return references
 
 
+def krea2_edit_reference_fit_mode(params: dict) -> str:
+    """How a reference is made to fit the target: 'fit' or 'crop'.
+
+    'fit' resamples the reference aspect-preserving, caps it to the target grid
+    and centres it on the target; 'crop' centre-crops to the target aspect ratio
+    and anchors at the origin. The identity-edit LoRA was trained on 'fit'.
+    An unrecognised value falls back to the default rather than being sent on,
+    since the runtime would only warn and ignore it.
+    """
+    requested_fit_mode = str(params.get("fit_mode", DEFAULT_REFERENCE_FIT_MODE)).strip().lower()
+    if requested_fit_mode not in REFERENCE_FIT_MODES:
+        return DEFAULT_REFERENCE_FIT_MODE
+    return requested_fit_mode
+
+
 def build_krea2_edit_ref_image_args(params: dict) -> str:
-    """The reference-image args: preset, VLM grounding size, per-reference fidelity.
+    """The reference-image args: preset, VLM grounding size, fit mode, fidelity.
+
+    The default fit mode is omitted so the preset's own geometry stands.
 
     ref_boost is repeated once per reference, in reference order, because the
     runtime's key=value parser splits on both ',' and ';' and so cannot carry a
@@ -63,6 +82,9 @@ def build_krea2_edit_ref_image_args(params: dict) -> str:
     grounding_pixels = int(params.get("grounding_px", DEFAULT_GROUNDING_PIXELS))
     if grounding_pixels > 0:
         arguments.append(f"vlm_size={grounding_pixels}")
+    fit_mode = krea2_edit_reference_fit_mode(params)
+    if fit_mode != DEFAULT_REFERENCE_FIT_MODE:
+        arguments.append(f"fit_mode={fit_mode}")
     references = krea2_edit_references(params)
     if any(reference["ref_boost"] != NEUTRAL_REFERENCE_FIDELITY for reference in references):
         arguments += [f"ref_boost={reference['ref_boost']:g}" for reference in references]

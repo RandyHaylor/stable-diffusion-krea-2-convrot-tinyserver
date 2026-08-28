@@ -338,6 +338,26 @@ def main() -> int:
           "init_images" not in krea2_edit_request and "denoising_strength" not in krea2_edit_request,
           f"keys={sorted(krea2_edit_request)}")
 
+    krea2_edit_crop_params = build_job_params("krea2-edit-crop")
+    krea2_edit_crop_params["krea2_edit_enabled"] = True
+    krea2_edit_crop_params["krea2_edit_references"] = [
+        {"filename": uploaded_reference["name"], "ref_boost": 1},
+    ]
+    krea2_edit_crop_params["grounding_px"] = 768
+    krea2_edit_crop_params["fit_mode"] = "crop"
+    client.post("/api/jobs", json={"params": krea2_edit_crop_params}, headers=session_headers)
+    wait_until(lambda: next((j for j in client.get("/api/state", headers=session_headers).json()["history"]
+                             if (j["params"] or {}).get("prompt") == "krea2-edit-crop"
+                             and j["status"] == "completed"), None),
+               20, "krea2-edit-crop job to complete")
+    krea2_edit_crop_native_args = json.loads(
+        find_generation_request_for_prompt("krea2-edit-crop")["prompt"]
+        .split("<sd_cpp_extra_args>", 1)[1].split("</sd_cpp_extra_args>", 1)[0])
+    check("the chosen reference fit mode reaches the runtime in the native args",
+          krea2_edit_crop_native_args.get("ref_image_args")
+          == "preset=krea2_edit,vlm_size=768,fit_mode=crop",
+          f"ref_image_args={krea2_edit_crop_native_args.get('ref_image_args')!r}")
+
     check_server_log_tail_reader(check)
     check("server log endpoint requires authentication",
           client.get("/api/server-log").status_code == 401)

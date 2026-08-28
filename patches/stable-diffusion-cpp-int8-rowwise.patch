@@ -215,7 +215,7 @@ index bab62ba..7348611 100644
  } sd_sample_params_t;
  
 diff --git a/src/model/diffusion/krea2.hpp b/src/model/diffusion/krea2.hpp
-index b3947b7..3357fdb 100644
+index b3947b7..c260ddb 100644
 --- a/src/model/diffusion/krea2.hpp
 +++ b/src/model/diffusion/krea2.hpp
 @@ -261,7 +261,8 @@ namespace Krea2 {
@@ -318,7 +318,85 @@ index b3947b7..3357fdb 100644
                  sd::ggml_graph_cut::mark_graph_cut(hidden_states, "krea2.blocks." + std::to_string(i), "hidden_states");
              }
  
-@@ -706,10 +722,53 @@ namespace Krea2 {
+@@ -687,6 +703,59 @@ namespace Krea2 {
+         }
+     };
+ 
++    __STATIC_INLINE__ int krea2_patch_len(int size, int patch_size) {
++        return (size + patch_size / 2) / patch_size;
++    }
++
++    // Reference positions centred on the target grid rather than anchored at its
++    // origin. A reference resized aspect-preserving has a different shape from
++    // the target, so origin anchoring leaves it unregistered against the target.
++    // The offsets stay fractional: RoPE is continuous, so a half-token offset is
++    // exact, while flooring an odd gap puts the reference half a patch off centre.
++    // Requires the reference grid to fit inside the target grid, which the
++    // fit_references_within_target resize cap guarantees.
++    __STATIC_INLINE__ std::vector<std::vector<float>> gen_krea2_refs_ids_centered_on_target(
++        int target_h_len,
++        int target_w_len,
++        int patch_size,
++        int bs,
++        int axes_dim_num,
++        int start_index,
++        const std::vector<ggml_tensor*>& ref_latents) {
++        std::vector<std::vector<float>> ids;
++        int index = start_index;
++        for (ggml_tensor* ref : ref_latents) {
++            const int ref_h_len = krea2_patch_len(static_cast<int>(ref->ne[1]), patch_size);
++            const int ref_w_len = krea2_patch_len(static_cast<int>(ref->ne[0]), patch_size);
++            GGML_ASSERT(ref_h_len <= target_h_len && ref_w_len <= target_w_len);
++
++            const float row_offset = (target_h_len - ref_h_len) / 2.0f;
++            const float col_offset = (target_w_len - ref_w_len) / 2.0f;
++            const auto row_ids     = Rope::linspace<float>(row_offset, row_offset + ref_h_len - 1, ref_h_len);
++            const auto col_ids     = Rope::linspace<float>(col_offset, col_offset + ref_w_len - 1, ref_w_len);
++
++            std::vector<std::vector<float>> ref_ids(static_cast<size_t>(ref_h_len) * ref_w_len,
++                                                    std::vector<float>(axes_dim_num, 0.f));
++            for (int row = 0; row < ref_h_len; ++row) {
++                for (int col = 0; col < ref_w_len; ++col) {
++                    auto& patch_ids = ref_ids[static_cast<size_t>(row) * ref_w_len + col];
++                    patch_ids[0]    = 1.f * index;
++                    patch_ids[1]    = row_ids[row];
++                    patch_ids[2]    = col_ids[col];
++                }
++            }
++
++            std::vector<std::vector<float>> ref_ids_repeated;
++            ref_ids_repeated.reserve(static_cast<size_t>(bs) * ref_ids.size());
++            for (int batch = 0; batch < bs; ++batch) {
++                ref_ids_repeated.insert(ref_ids_repeated.end(), ref_ids.begin(), ref_ids.end());
++            }
++            ids = Rope::concat_ids(ids, ref_ids_repeated, bs);
++            index++;
++        }
++        return ids;
++    }
++
+     __STATIC_INLINE__ std::vector<float> gen_krea2_pe(int h,
+                                                       int w,
+                                                       int patch_size,
+@@ -695,21 +764,69 @@ namespace Krea2 {
+                                                       float theta,
+                                                       const std::vector<int>& axes_dim,
+                                                       const std::vector<ggml_tensor*>& ref_latents,
+-                                                      Rope::RefIndexMode ref_index_mode) {
++                                                      Rope::RefIndexMode ref_index_mode,
++                                                      bool center_refs_on_target) {
+         auto txt_ids = Rope::gen_flux_txt_ids(bs, context_len, 3, {});
+         auto img_ids = Rope::gen_flux_img_ids(h, w, patch_size, bs, 3, 0, 0, 0, false);
+         auto ids     = Rope::concat_ids(txt_ids, img_ids, bs);
+         if (ref_latents.size() > 0) {
+-            auto refs_ids = Rope::gen_refs_ids(patch_size, bs, 3, 1, ref_latents, ref_index_mode, 1.0f, false, 0);
++            auto refs_ids = center_refs_on_target
++                                ? gen_krea2_refs_ids_centered_on_target(krea2_patch_len(h, patch_size),
++                                                                        krea2_patch_len(w, patch_size),
++                                                                        patch_size, bs, 3, 1, ref_latents)
++                                : Rope::gen_refs_ids(patch_size, bs, 3, 1, ref_latents, ref_index_mode, 1.0f, false, 0);
+             ids           = Rope::concat_ids(ids, refs_ids, bs);
+         }
          return Rope::embed_nd(ids, bs, theta, axes_dim);
      }
  
@@ -372,7 +450,7 @@ index b3947b7..3357fdb 100644
  
          Krea2Runner(ggml_backend_t backend,
                      const String2TensorStorage& tensor_storage_map      = {},
-@@ -733,7 +792,9 @@ namespace Krea2 {
+@@ -733,7 +850,9 @@ namespace Krea2 {
                                   const sd::Tensor<float>& timesteps_tensor,
                                   const sd::Tensor<float>& context_tensor,
                                   const std::vector<sd::Tensor<float>>& ref_latents_tensor = {},
@@ -383,7 +461,14 @@ index b3947b7..3357fdb 100644
              ggml_cgraph* gf        = new_graph_custom(KREA2_GRAPH_SIZE);
              ggml_tensor* x         = make_input(x_tensor);
              ggml_tensor* timesteps = make_input(timesteps_tensor);
-@@ -760,8 +821,46 @@ namespace Krea2 {
+@@ -755,13 +874,52 @@ namespace Krea2 {
+                                        config.theta,
+                                        config.axes_dim,
+                                        ref_latents,
+-                                       ref_image_params.ref_index_mode);
++                                       ref_image_params.ref_index_mode,
++                                       ref_image_params.fit_references_within_target);
+             int pos_len = static_cast<int>(pe_vec.size() / config.axes_dim_sum / 2);
              auto pe     = ggml_new_tensor_4d(compute_ctx, GGML_TYPE_F32, 2, 2, config.axes_dim_sum / 2, pos_len);
              set_backend_tensor_data(pe, pe_vec.data());
  
@@ -431,7 +516,7 @@ index b3947b7..3357fdb 100644
              ggml_build_forward_expand(gf, out);
              return gf;
          }
-@@ -771,9 +870,11 @@ namespace Krea2 {
+@@ -771,9 +929,11 @@ namespace Krea2 {
                                    const sd::Tensor<float>& timesteps,
                                    const sd::Tensor<float>& context,
                                    const std::vector<sd::Tensor<float>>& ref_latents = {},
@@ -445,7 +530,7 @@ index b3947b7..3357fdb 100644
              };
              return restore_trailing_singleton_dims(GGMLRunner::compute<float>(get_graph, n_threads, false, false, false), x.dim());
          }
-@@ -788,7 +889,9 @@ namespace Krea2 {
+@@ -788,7 +948,9 @@ namespace Krea2 {
                             *diffusion_params.timesteps,
                             tensor_or_empty(diffusion_params.context),
                             diffusion_params.ref_latents && diffusion_params.ref_image_params.pass_to_dit ? *diffusion_params.ref_latents : empty_ref_latents,
@@ -457,13 +542,17 @@ index b3947b7..3357fdb 100644
      };
  }  // namespace Krea2
 diff --git a/src/model/diffusion/model.hpp b/src/model/diffusion/model.hpp
-index 070ca53..970888e 100644
+index 070ca53..6e1234a 100644
 --- a/src/model/diffusion/model.hpp
 +++ b/src/model/diffusion/model.hpp
-@@ -27,6 +27,10 @@ struct RefImageParams {
+@@ -27,6 +27,14 @@ struct RefImageParams {
      int vlm_min_size                   = -1;
      int vlm_max_size                   = -1;
      bool resize_vae_to_target          = false;
++    // Krea2 "fit" geometry: cap the aspect-preserving reference resize to the
++    // target grid and place its RoPE ids centred on the target instead of at the
++    // origin. Off gives "crop" geometry, where references are origin-anchored.
++    bool fit_references_within_target  = false;
 +    // Per-reference multipliers on target->reference attention, in reference
 +    // order. A single entry applies to every reference. Empty, or all 1.0,
 +    // leaves attention untouched.
@@ -471,7 +560,16 @@ index 070ca53..970888e 100644
  };
  
  const std::unordered_map<std::string, RefImageParams> REF_IMAGE_PRESETS = {
-@@ -141,6 +145,8 @@ struct DiffusionParams {
+@@ -38,7 +46,7 @@ const std::unordered_map<std::string, RefImageParams> REF_IMAGE_PRESETS = {
+     {"mage_flow", {true, true, Rope::RefIndexMode::INCREASE, false, true, -1, RefImageResizeMode::LONGEST_SIDE, -1, 384, true}},
+     {"z_image_omni", {true, true, Rope::RefIndexMode::FIXED, false, true, -1, RefImageResizeMode::AREA, -1, -1}},
+     {"krea2_ostris_edit", {true, true, Rope::RefIndexMode::INCREASE, true, true, -1, RefImageResizeMode::AREA, -1, -1}},
+-    {"krea2_edit", {true, true, Rope::RefIndexMode::INCREASE, false, true, -1, RefImageResizeMode::LONGEST_SIDE, 768, 768}},
++    {"krea2_edit", {true, true, Rope::RefIndexMode::INCREASE, false, true, -1, RefImageResizeMode::LONGEST_SIDE, 768, 768, false, true}},
+     {"cosmos_reference", {false, true, Rope::RefIndexMode::INCREASE, false, false, -1, RefImageResizeMode::NONE, -1, -1}},
+ };
+ 
+@@ -141,6 +149,8 @@ struct DiffusionParams {
      const sd::Tensor<float>* y                        = nullptr;
      const std::vector<sd::Tensor<float>>* ref_latents = nullptr;
      RefImageParams ref_image_params                   = {false, false, Rope::RefIndexMode::FIXED, false};
@@ -518,7 +616,7 @@ index 69bcaa1..5eeda8d 100644
                  tensor_storage.ne[0]  = tensor_storage.ne[1];
                  tensor_storage.ne[1]  = 1;
 diff --git a/src/stable-diffusion.cpp b/src/stable-diffusion.cpp
-index 7370f6a..8daebcc 100644
+index 7370f6a..226c220 100644
 --- a/src/stable-diffusion.cpp
 +++ b/src/stable-diffusion.cpp
 @@ -2516,6 +2516,7 @@ public:
@@ -693,37 +791,43 @@ index 7370f6a..8daebcc 100644
              if (is_skiplayer_step && slg_scale != 0.0f) {
                  LOG_DEBUG("Skipping layers at step %d\n", step);
                  if (!step_cache.is_step_skipped()) {
-@@ -3241,9 +3303,29 @@ public:
-                 break;
+@@ -3224,6 +3286,22 @@ public:
+                 if (!parse_strict_int(value, params.vlm_min_size)) {
+                     LOG_WARN("ignoring invalid reference image arg '%s=%s'", key.c_str(), value.c_str());
+                 }
++            } else if (key == "fit_mode") {
++                if (value == "fit") {
++                    params.fit_references_within_target = true;
++                } else if (value == "crop") {
++                    params.fit_references_within_target = false;
++                } else {
++                    LOG_WARN("ignoring invalid reference image arg '%s=%s'", key.c_str(), value.c_str());
++                }
++            } else if (key == "ref_boost") {
++                // Repeated keys give one multiplier per reference, in order.
++                float boost = 1.0f;
++                if (!parse_strict_float(value, boost) || boost <= 0.f) {
++                    LOG_WARN("ignoring invalid reference image arg '%s=%s'", key.c_str(), value.c_str());
++                } else {
++                    params.ref_boosts.push_back(boost);
++                }
+             } else if (key != "preset" && key != "vlm_size") {
+                 LOG_WARN("ignoring unknown reference image arg '%s'", key.c_str());
              }
-         }
-+        // Repeated ref_boost keys give one multiplier per reference, in order.
-+        // A single key applies to every reference.
-+        for (const auto& [key, value] : parse_key_value_args(ref_image_args, "reference image args")) {
-+            if (key != "ref_boost") {
-+                continue;
-+            }
-+            float boost = 1.0f;
-+            if (!parse_strict_float(value, boost)) {
-+                LOG_WARN("ignoring invalid reference image arg 'ref_boost=%s'", value.c_str());
-+                continue;
-+            }
-+            if (boost <= 0.f) {
-+                LOG_WARN("ignoring non-positive ref_boost '%s'", value.c_str());
-+                continue;
-+            }
-+            params.ref_boosts.push_back(boost);
-+        }
+@@ -3244,6 +3322,12 @@ public:
          if (params.force_ref_timestep_zero && !sd_version_is_krea2(version)) {
              LOG_WARN("force_ref_timestep_zero is only supported by Krea2 architecture for now");
          }
 +        if (!params.ref_boosts.empty() && !sd_version_is_krea2(version)) {
 +            LOG_WARN("ref_boost is only supported by Krea2 architecture for now");
 +        }
++        if (params.fit_references_within_target && !sd_version_is_krea2(version)) {
++            LOG_WARN("fit_mode is only supported by Krea2 architecture for now");
++        }
          return params;
      }
  };
-@@ -3669,6 +3751,12 @@ void sd_sample_params_init(sd_sample_params_t* sample_params) {
+@@ -3669,6 +3753,12 @@ void sd_sample_params_init(sd_sample_params_t* sample_params) {
      sample_params->custom_sigmas               = nullptr;
      sample_params->custom_sigmas_count         = 0;
      sample_params->flow_shift                  = INFINITY;
@@ -736,7 +840,7 @@ index 7370f6a..8daebcc 100644
      sample_params->extra_sample_args           = nullptr;
  }
  
-@@ -3686,6 +3774,11 @@ char* sd_sample_params_to_str(const sd_sample_params_t* sample_params) {
+@@ -3686,6 +3776,11 @@ char* sd_sample_params_to_str(const sd_sample_params_t* sample_params) {
               "slg.layer_start: %.2f, "
               "slg.layer_end: %.2f, "
               "slg.scale: %.2f, "
@@ -748,7 +852,7 @@ index 7370f6a..8daebcc 100644
               "scheduler: %s, "
               "sample_method: %s, "
               "sample_steps: %d, "
-@@ -3702,6 +3795,11 @@ char* sd_sample_params_to_str(const sd_sample_params_t* sample_params) {
+@@ -3702,6 +3797,11 @@ char* sd_sample_params_to_str(const sd_sample_params_t* sample_params) {
               sample_params->guidance.slg.layer_start,
               sample_params->guidance.slg.layer_end,
               sample_params->guidance.slg.scale,
@@ -760,7 +864,7 @@ index 7370f6a..8daebcc 100644
               sd_scheduler_name(sample_params->scheduler),
               sd_sample_method_name(sample_params->sample_method),
               sample_params->sample_steps,
-@@ -3721,7 +3819,7 @@ void sd_img_gen_params_init(sd_img_gen_params_t* sd_img_gen_params) {
+@@ -3721,7 +3821,7 @@ void sd_img_gen_params_init(sd_img_gen_params_t* sd_img_gen_params) {
      sd_img_gen_params->ref_image_args      = "";
      sd_img_gen_params->width               = 512;
      sd_img_gen_params->height              = 512;
@@ -769,7 +873,29 @@ index 7370f6a..8daebcc 100644
      sd_img_gen_params->seed                = -1;
      sd_img_gen_params->batch_count         = 1;
      sd_img_gen_params->control_strength    = 0.9f;
-@@ -5698,6 +5796,7 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
+@@ -5096,6 +5196,21 @@ static std::optional<ImageGenerationLatents> prepare_image_generation_latents(sd
+             vae_height = round(vae_height / factor) * factor;
+             vae_width  = round(vae_width / factor) * factor;
+ 
++            if (ref_image_params.fit_references_within_target) {
++                // Centred reference positions are only well defined while the
++                // reference grid fits inside the target grid, so a reference
++                // whose aspect ratio differs from the target is shrunk to fit.
++                // The scale is uniform: squashing one axis alone would compress
++                // content and leave a doubled band at the reference boundary.
++                const double max_vae_width  = request->width / factor * factor;
++                const double max_vae_height = request->height / factor * factor;
++                const double fit_scale      = std::min(max_vae_width / vae_width, max_vae_height / vae_height);
++                if (fit_scale < 1.0) {
++                    vae_width  = std::min(round(vae_width * fit_scale / factor) * factor, max_vae_width);
++                    vae_height = std::min(round(vae_height * fit_scale / factor) * factor, max_vae_height);
++                }
++            }
++
+             auto resized_ref_img = sd::ops::interpolate(ref_images[i],
+                                                         {static_cast<int>(vae_width),
+                                                          static_cast<int>(vae_height),
+@@ -5698,6 +5813,7 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
                                                     latents.control_image,
                                                     request.control_strength,
                                                     request.guidance,
@@ -777,7 +903,7 @@ index 7370f6a..8daebcc 100644
                                                     plan.eta,
                                                     request.shifted_timestep,
                                                     plan.sample_method,
-@@ -5819,6 +5918,7 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
+@@ -5819,6 +5935,7 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
                                                              latents.control_image,
                                                              request.control_strength,
                                                              request.guidance,
@@ -785,7 +911,7 @@ index 7370f6a..8daebcc 100644
                                                              plan.eta,
                                                              request.shifted_timestep,
                                                              plan.sample_method,
-@@ -6952,6 +7052,7 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
+@@ -6952,6 +7069,7 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
                                                             sd::Tensor<float>(),
                                                             0.f,
                                                             request.high_noise_guidance,
@@ -793,7 +919,7 @@ index 7370f6a..8daebcc 100644
                                                             plan.high_noise_eta,
                                                             request.shifted_timestep,
                                                             plan.high_noise_sample_method,
-@@ -6994,6 +7095,7 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
+@@ -6994,6 +7112,7 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
                                                          sd::Tensor<float>(),
                                                          0.f,
                                                          sd_vid_gen_params->sample_params.guidance,
@@ -801,7 +927,7 @@ index 7370f6a..8daebcc 100644
                                                          plan.eta,
                                                          sd_vid_gen_params->sample_params.shifted_timestep,
                                                          plan.sample_method,
-@@ -7132,6 +7234,7 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
+@@ -7132,6 +7251,7 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
                                              sd::Tensor<float>(),
                                              0.f,
                                              sd_vid_gen_params->sample_params.guidance,

@@ -15,6 +15,7 @@ from krea2_edit_request import (  # noqa: E402
     is_krea2_edit_enabled,
     krea2_edit_native_args_fields,
     krea2_edit_payload_fields,
+    krea2_edit_reference_fit_mode,
     krea2_edit_references,
 )
 
@@ -117,6 +118,36 @@ def main() -> int:
                                          {"filename": "b.png", "ref_boost": 4}]))
           == "preset=krea2_edit,vlm_size=768,ref_boost=1,ref_boost=4",
           "positions must stay aligned with the reference list")
+
+    check("the reference fit mode defaults to fit when the user sent nothing",
+          krea2_edit_reference_fit_mode(enabled_params()) == "fit")
+    check("an explicit crop fit mode is kept",
+          krea2_edit_reference_fit_mode(enabled_params(fit_mode="crop")) == "crop")
+    check("an unrecognised fit mode falls back to the default rather than reaching the runtime",
+          krea2_edit_reference_fit_mode(enabled_params(fit_mode="stretch")) == "fit",
+          "the runtime would warn and ignore it anyway")
+
+    check("the default fit mode is omitted, leaving the preset's own geometry in place",
+          "fit_mode" not in build_krea2_edit_ref_image_args(enabled_params()),
+          f"got {build_krea2_edit_ref_image_args(enabled_params())!r}")
+    crop_mode = enabled_params(fit_mode="crop")
+    check("crop fit mode is emitted as its own key",
+          build_krea2_edit_ref_image_args(crop_mode)
+          == "preset=krea2_edit,vlm_size=768,fit_mode=crop",
+          f"got {build_krea2_edit_ref_image_args(crop_mode)!r}")
+    crop_mode_with_boosts = enabled_params(fit_mode="crop", references=[
+        {"filename": "scene.png", "ref_boost": 1},
+        {"filename": "person.png", "ref_boost": 4},
+    ])
+    check("fit mode and per-reference boosts coexist",
+          build_krea2_edit_ref_image_args(crop_mode_with_boosts)
+          == "preset=krea2_edit,vlm_size=768,fit_mode=crop,ref_boost=1,ref_boost=4",
+          f"got {build_krea2_edit_ref_image_args(crop_mode_with_boosts)!r}")
+    check("the fit mode travels in the native args, never in the payload body",
+          krea2_edit_native_args_fields(crop_mode)
+          == {"ref_image_args": "preset=krea2_edit,vlm_size=768,fit_mode=crop"}
+          and "fit_mode" not in krea2_edit_payload_fields(crop_mode, fake_reference_image_loader),
+          f"got {krea2_edit_native_args_fields(crop_mode)}")
 
     check("no payload fields are produced when edit mode is off",
           krea2_edit_payload_fields({}, fake_reference_image_loader) == {})
