@@ -72,6 +72,20 @@ def main() -> int:
           build_krea2_edit_ref_image_args(enabled_params())
           == "preset=krea2_edit,vlm_size=768",
           f"got {build_krea2_edit_ref_image_args(enabled_params())!r}")
+    check("a reference fidelity above one is sent as ref_boost",
+          build_krea2_edit_ref_image_args(enabled_params(ref_boost=4))
+          == "preset=krea2_edit,vlm_size=768,ref_boost=4",
+          f"got {build_krea2_edit_ref_image_args(enabled_params(ref_boost=4))!r}")
+    check("a fractional reference fidelity keeps its precision",
+          build_krea2_edit_ref_image_args(enabled_params(ref_boost=2.5))
+          == "preset=krea2_edit,vlm_size=768,ref_boost=2.5")
+    check("a reference fidelity of exactly one is omitted, leaving attention untouched",
+          build_krea2_edit_ref_image_args(enabled_params(ref_boost=1))
+          == "preset=krea2_edit,vlm_size=768",
+          "1.0 is the no-op value, so it should not appear in the args")
+    check("a non-positive reference fidelity is omitted rather than sent",
+          build_krea2_edit_ref_image_args(enabled_params(ref_boost=0))
+          == "preset=krea2_edit,vlm_size=768")
     check("grounding size follows the requested value",
           build_krea2_edit_ref_image_args(enabled_params(grounding_px=384))
           == "preset=krea2_edit,vlm_size=384")

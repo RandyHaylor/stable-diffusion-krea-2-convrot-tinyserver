@@ -18,6 +18,7 @@ from typing import Callable
 
 REF_IMAGE_PRESET_NAME = "krea2_edit"
 DEFAULT_GROUNDING_PIXELS = 768
+NEUTRAL_REFERENCE_FIDELITY = 1.0
 
 
 def is_krea2_edit_enabled(params: dict) -> bool:
@@ -41,11 +42,14 @@ def krea2_edit_reference_filenames(params: dict) -> list[str]:
 
 
 def build_krea2_edit_ref_image_args(params: dict) -> str:
-    """The reference-image args selecting the preset and the VLM grounding size."""
+    """The reference-image args: preset, VLM grounding size, reference fidelity."""
     arguments = [f"preset={REF_IMAGE_PRESET_NAME}"]
     grounding_pixels = int(params.get("grounding_px", DEFAULT_GROUNDING_PIXELS))
     if grounding_pixels > 0:
         arguments.append(f"vlm_size={grounding_pixels}")
+    reference_fidelity = float(params.get("ref_boost", NEUTRAL_REFERENCE_FIDELITY))
+    if reference_fidelity > 0 and reference_fidelity != NEUTRAL_REFERENCE_FIDELITY:
+        arguments.append(f"ref_boost={reference_fidelity:g}")
     return ",".join(arguments)
 
 
