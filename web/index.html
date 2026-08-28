@@ -34,8 +34,10 @@ button.danger{background:#49252a;border-color:#813942}
 .job-details .detail-loras{grid-column:1/-1;color:#d7deea}
 .job-images{display:grid;grid-template-columns:repeat(auto-fill,minmax(124px,1fr));gap:8px;min-width:260px;max-width:520px;flex:0 0 40%}
 .job-images a{display:block;text-decoration:none}
-.source-choice{display:flex;align-items:center;gap:5px;margin-bottom:4px;color:var(--muted);font-size:11px}
+.source-choice{display:flex;align-items:center;flex-wrap:wrap;gap:5px;margin-bottom:4px;color:var(--muted);font-size:11px}
 .source-choice input{width:auto;margin:0}
+.source-choice-radio{display:flex;align-items:center;gap:5px}
+.add-krea2-edit-reference{flex:1 1 100%;width:auto;padding:3px 7px;font-size:10px;line-height:1.2;background:#222b35;border-color:#465163}
 .results-workspace{min-height:520px}
 .source-header{padding:4px 4px 12px;border-bottom:1px solid var(--line)}
 .source-header>.source-choice{font-size:13px;margin:0}
@@ -594,6 +596,19 @@ async function uploadKrea2EditReferenceImage(panel, file){
   }
 }
 
+function addOutputImageAsKrea2EditReference(name, event){
+  if (event) { event.preventDefault(); event.stopPropagation(); }
+  const emptyPanel = krea2EditReferencePanels().find(panel => !panel.dataset.filename);
+  if (emptyPanel) {
+    setKrea2EditReferenceImage(emptyPanel, name);
+  } else {
+    addKrea2EditReferencePanel(name);
+  }
+  $('krea2EditPanel').classList.remove('collapsed');
+  $('krea2EditCollapseToggle').textContent = '^';
+  $('krea2EditPanel').scrollIntoView({behavior: 'smooth', block: 'nearest'});
+}
+
 function collectKrea2EditReferences(){
   return krea2EditReferencePanels()
     .map(panel => ({
@@ -767,7 +782,9 @@ function jobImagesHtml(job){
   if (!outputs.length) return '';
   return `<div class="job-images">` + outputs.map(name =>
     `<a href="${outputUrl(name)}" target="_blank" rel="noreferrer" data-output-name="${escapeHtml(name)}">` +
-    `<span class="source-choice"><input type="radio" name="img2img-source" value="${escapeHtml(name)}"${selectedSourceImage === name ? ' checked' : ''} onchange="setSourceImage(this.value)" onclick="event.stopPropagation()"> Use for img2img</span>` +
+    `<span class="source-choice"><input type="radio" name="img2img-source" value="${escapeHtml(name)}"${selectedSourceImage === name ? ' checked' : ''} onchange="setSourceImage(this.value)" onclick="event.stopPropagation()"> Use for img2img` +
+      `<button type="button" class="add-krea2-edit-reference" onclick="addOutputImageAsKrea2EditReference('${escapeHtml(name)}', event)">add as new krea2 edit ref img</button>` +
+    `</span>` +
     `<img loading="lazy" src="${outputThumbUrl(name)}" alt="${escapeHtml(name)}">` +
     `<small>${escapeHtml(name)}</small>` +
     `</a>`
@@ -886,7 +903,9 @@ async function loadAllOutputs(force = false){
       const p = output.params || {};
       const resolution = output.width && output.height ? `${output.width}×${output.height}` : '';
       return `<div class="all-output-card" data-output-card="${escapeHtml(output.name)}">` +
-        `<label class="source-choice"><input type="radio" name="img2img-source" value="${escapeHtml(output.name)}"${selectedSourceImage === output.name ? ' checked' : ''} onchange="setSourceImage(this.value)"> Use for img2img</label>` +
+        `<div class="source-choice"><label class="source-choice-radio"><input type="radio" name="img2img-source" value="${escapeHtml(output.name)}"${selectedSourceImage === output.name ? ' checked' : ''} onchange="setSourceImage(this.value)"> Use for img2img</label>` +
+          `<button type="button" class="add-krea2-edit-reference" onclick="addOutputImageAsKrea2EditReference('${escapeHtml(output.name)}', event)">add as new krea2 edit ref img</button>` +
+        `</div>` +
         `<a class="all-output-link" href="${outputUrl(output.name)}" target="_blank" rel="noreferrer" data-output-name="${escapeHtml(output.name)}">` +
           `<img loading="lazy" src="${outputThumbUrl(output.name)}" alt="${escapeHtml(output.name)}">` +
           `<small>${escapeHtml(output.name)}${resolution ? ` · ${resolution}` : ''}</small>` +
