@@ -10,46 +10,19 @@ CUDA build of `stable-diffusion.cpp`.
 ```
 
 The generation scripts use a persistent server. The first request loads the
-models; later requests reuse the weights already resident in VRAM:
+models; later requests reuse the weights already resident in VRAM.
 
-```bash
-./run-krea-turbo.sh "a cinematic photograph of a red fox walking through snow"
-```
+The web UI is the primary way to generate. Any LoRA placed in `models/loras`
+is listed there and applied only when you select it, at the strength you set —
+including the raw-to-turbo LoRA, which the app treats no differently from any
+other. Low-step Turbo output is a matter of selecting that LoRA and setting the
+sampling fields accordingly; a tested recipe is LoRA strength 0.6, 6 steps and
+CFG 1.0. The default sampler and scheduler are `er_sde` and `discrete`.
 
-The Turbo launcher defaults to the tested low-step recipe: LoRA strength 0.6,
-6 steps, CFG 1.0, `res_2s`, and the beta57 schedule (`beta` with
-`alpha=0.5,beta=0.7`). Every value remains overrideable:
-
-```bash
-KREA_LORA_STRENGTH=0.7 KREA_STEPS=8 KREA_CFG=1.0 \
-  KREA_SAMPLER=res_2s KREA_SCHEDULER=beta \
-  KREA_EXTRA_SAMPLE_ARGS='alpha=0.5,beta=0.7' \
-  ./run-krea-turbo.sh "your prompt"
-```
-
-For a two-stage Turbo render, generate the composition at 768×768, bilinearly
-upscale its latent to 1536×1536, then refine it for three effective steps:
-
-```bash
-./run-krea-turbo-highres.sh "your prompt"
-```
-
-The high-resolution launcher has `SAVE_LOWRES_IMAGE=true` near the top. It
-saves a matching `krea-turbo-lowres-*.png` before the final
-`krea-turbo-highres-*.png`. Because the native hires endpoint only returns its
-final decode, saving the preview repeats the inexpensive three-step 768×768
-pass. Set the boolean to `false` to skip that extra render.
-
-This is equivalent to:
-
-```bash
-KREA_WIDTH=768 KREA_HEIGHT=768 KREA_STEPS=3 \
-  KREA_HIRES_WIDTH=1536 KREA_HIRES_HEIGHT=1536 \
-  KREA_HIRES_STEPS=3 KREA_HIRES_DENOISE=0.5 \
-  ./run-krea-turbo.sh "your prompt"
-```
-
-`KREA_HIRES_UPSCALER=Latent` is the runtime's bilinear latent interpolation.
+For a two-stage render, generate the composition at 768×768, bilinearly upscale
+its latent to 1536×1536, then refine it for three effective steps. Enable
+`Hires pass` in the UI and set the hires resolution, steps, and denoise.
+`Latent` is the runtime's bilinear latent interpolation.
 The second pass is an img2img-style refinement: it re-noises the completed
 low-resolution latent according to `KREA_HIRES_DENOISE`, rather than literally
 continuing one six-step sigma trajectory at its midpoint.
@@ -82,7 +55,7 @@ KREA_STEPS=28 KREA_CFG=4.5 KREA_SEED=42 ./run-krea.sh "your prompt"
 Client options can follow the prompt directly. For example:
 
 ```bash
-./run-krea-turbo.sh "your prompt" --width 768 --height 1024 --seed 42
+./run-krea.sh "your prompt" --width 768 --height 1024 --seed 42
 ```
 
 The default model root is the gitignored `models/` directory beside these
@@ -117,11 +90,9 @@ access control — Quick Tunnels are intended for temporary development use. Set
 
 The inference server itself stays bound to `127.0.0.1`; only the UI is exposed.
 
-The UI offers a preset dropdown (Turbo 1024, Turbo 768 → 1536,
-Turbo 1024 → 2048, Turbo custom) that fills in editable fields. Every field is
-a free-text input with a datalist of typical values, including common SDXL
-resolutions and the 1248×1824 portrait family, so a preset is a starting point
-rather than a constraint. VAE tile
+Every field in the UI is a free-text input with a datalist of typical values,
+including common SDXL resolutions and the 1248×1824 portrait family, so the
+suggestions are a starting point rather than a constraint. VAE tile
 size is exposed with 32/64/68/128/256/512; those are **latent** units, so they
 correspond to 256/512/544/1024/2048/4096 output pixels. Larger values are the
 usual cause of an out-of-memory decode at 2048.
@@ -151,7 +122,7 @@ restart the server after rebuilding.
   is the previous checkpoint and still loads)
 - Text encoder: `models/text/Qwen3VL-4B-Instruct-Q4_K_M.gguf`
 - VAE: `models/vae/qwen_image_vae.safetensors`
-- Turbo LoRA: `models/loras/krea2_raw_to_turbo_r256.safetensors`
+- LoRAs: any `*.safetensors` in `models/loras`, selectable in the web UI
 - Runtime revision: `stable-diffusion.cpp` commit `50d640568388f876b0d63ee6ddb6bc86d997ec64`
 
 The downloaded checkpoint uses the newer ComfyUI format name

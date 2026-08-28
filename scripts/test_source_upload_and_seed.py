@@ -88,8 +88,9 @@ def main() -> int:
             metadata_params = {
                 "prompt": "seed metadata test", "negative_prompt": "",
                 "width": 8, "height": 8, "steps": 1, "cfg": 1.0, "seed": -1,
-                "sampler": "res_2s", "scheduler": "beta", "flow_shift": 1.15,
+                "sampler": "er_sde", "scheduler": "discrete", "flow_shift": 1.15,
                 "extra_sample_args": "", "vae_tile_size": 32, "extra_loras": [],
+                "beta_schedule_alpha": 0.5, "beta_schedule_beta": 0.7,
                 "checkpoint": "", "model_name": "", "source_image": "",
                 "hires": False, "save_lowres": False,
             }

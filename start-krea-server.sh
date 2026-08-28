@@ -28,7 +28,7 @@ for _ in {1..240}; do
         echo "Krea HTTP server is ready. Model loading is lazy: the first"
         echo "generation loads the weights; its terminal will show progress."
         echo "After that, the model remains loaded in VRAM."
-        echo "Run run-krea.sh or run-krea-turbo.sh to generate images."
+        echo "Run start-krea-web.sh and generate from the web UI, or run-krea.sh."
         echo "Run krea-server.sh stop when you want to release VRAM."
         echo
         echo "Following server output from ${ROOT_DIR}/.runtime/krea-server.log"

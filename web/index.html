@@ -49,6 +49,15 @@ button.danger{background:#49252a;border-color:#813942}
 .selected-source-copy strong{color:var(--accent);font-size:12px}
 .selected-source-copy span{color:var(--muted);font-size:11px;overflow-wrap:anywhere}
 .selected-source-copy button{width:auto;margin-top:4px;padding:6px 10px;font-size:12px;justify-self:start}
+.workspace-column{display:grid;gap:16px;align-content:start;min-width:0}
+.krea2edit-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.krea2edit-head h2{margin:0}
+.krea2edit-head label{display:flex;align-items:center;gap:5px;margin:0;color:var(--muted);font-size:12px}
+.krea2edit-head label input{width:auto;margin:0}
+.krea2edit-collapse-toggle{width:30px;margin-left:auto;padding:3px 7px;font-size:14px;line-height:1;background:#222b35;border-color:#465163}
+.krea2edit-settings{margin-top:10px;display:grid;gap:8px}
+.krea2edit-lora-reminder{margin:0;color:var(--muted);font-size:11px}
+#krea2EditPanel.collapsed .krea2edit-settings{display:none}
 .result-tabs{display:flex;gap:5px;padding-top:11px;border-bottom:1px solid var(--line)}
 .result-tab{width:auto;padding:7px 15px;border-radius:7px 7px 0 0;background:#151922;border-color:var(--line);border-bottom:0;color:var(--muted)}
 .result-tab.active{background:#263a37;color:#fff;border-color:#3c7469}
@@ -167,9 +176,6 @@ button.danger{background:#49252a;border-color:#813942}
 
 <div class="grid">
 <section class="panel">
-  <label for="preset">Preset</label>
-  <select id="preset"></select>
-
   <label for="prompt">Prompt</label>
   <textarea id="prompt" placeholder="Describe the image..."></textarea>
 
@@ -192,8 +198,13 @@ button.danger{background:#49252a;border-color:#813942}
     <div><label for="flow_shift">Flow shift</label><div class="combo" data-field="flow_shift"></div></div>
   </div>
 
+  <div class="fields two">
+    <div><label for="beta_schedule_alpha">Beta scheduler alpha</label><div class="combo" data-field="beta_schedule_alpha"></div></div>
+    <div><label for="beta_schedule_beta">Beta scheduler beta</label><div class="combo" data-field="beta_schedule_beta"></div></div>
+  </div>
+
   <label for="extra_sample_args">Extra sample args</label>
-  <input id="extra_sample_args" value="alpha=0.5,beta=0.7">
+  <input id="extra_sample_args" value="">
 
   <h2>Pag attention guidance (main stage only)</h2>
   <div class="checks">
@@ -225,6 +236,40 @@ button.danger{background:#49252a;border-color:#813942}
   <div class="fields two">
     <div><label for="hires_upscaler">Hires upscaler</label><div class="combo" data-field="hires_upscaler"></div></div>
     <div><label for="vae_tile_size">VAE tile size (latent; 32 = 256px)</label><div class="combo" data-field="vae_tile_size"></div></div>
+  </div>
+</section>
+
+<div class="workspace-column">
+<section id="krea2EditPanel" class="panel">
+  <div class="krea2edit-head">
+    <h2>Krea2 Edit</h2>
+    <label><input id="krea2_edit_enabled" type="checkbox"> Enable Krea2 Edit</label>
+    <button id="krea2EditCollapseToggle" class="krea2edit-collapse-toggle" type="button"
+            title="Hide Krea2 Edit settings" onclick="toggleKrea2EditPanelSettings()">^</button>
+  </div>
+  <div id="krea2EditReferencePreview" class="selected-source-preview">
+    <div class="source-thumb-slot">
+      <img id="krea2EditReferenceThumb" alt="Selected Krea2 Edit reference" hidden>
+      <span id="krea2EditReferenceDropHint">Drag image here</span>
+    </div>
+    <div class="selected-source-copy">
+      <strong id="krea2EditReferenceStatus">No reference image selected</strong>
+      <span id="krea2EditReferenceName"></span>
+      <span id="krea2EditReferenceResolution"></span>
+      <button type="button" onclick="chooseKrea2EditReferenceImage()">Load reference image</button>
+      <input id="krea2EditReferenceFile" type="file" accept="image/png,image/jpeg,.png,.jpg,.jpeg" hidden>
+    </div>
+  </div>
+  <div class="krea2edit-settings">
+    <p class="krea2edit-lora-reminder">* the Krea2 Edit LoRA must be selected in the LoRAs list above to use this feature</p>
+    <div class="fields two">
+      <div><label for="ref_boost">Reference fidelity (ref_boost)</label><div class="combo" data-field="ref_boost"></div></div>
+      <div><label for="ref_boost_a">Scene fidelity (ref_boost_a)</label><div class="combo" data-field="ref_boost_a"></div></div>
+    </div>
+    <div class="fields two">
+      <div><label for="grounding_px">Grounding resolution (px)</label><div class="combo" data-field="grounding_px"></div></div>
+      <div><label for="fit_mode">Reference fit mode</label><div class="combo" data-field="fit_mode"></div></div>
+    </div>
   </div>
 </section>
 
@@ -265,6 +310,7 @@ button.danger{background:#49252a;border-color:#813942}
     <div id="allOutputs" class="all-outputs">Open this tab to load output thumbnails.</div>
   </div>
 </section>
+</div>
 </div></main>
 
 <script>
@@ -276,9 +322,11 @@ const COMBO_FIELDS = {
   seed:            {value:'0',   step:1,    options:['-1','0','42']},
   steps:           {value:'6',   step:1,    options:['3','6','8','12','28','52']},
   cfg:             {value:'1',   step:0.1,  options:['1','3.5','4.5','7']},
-  sampler:         {value:'res_2s', options:[]},
-  scheduler:       {value:'beta',   options:[]},
+  sampler:         {value:'er_sde',   options:[]},
+  scheduler:       {value:'discrete', options:[]},
   flow_shift:      {value:'1.15', step:0.05, options:['1','1.15','2','3']},
+  beta_schedule_alpha: {value:'0.5', step:0.05, options:['0.3','0.5','0.6']},
+  beta_schedule_beta:  {value:'0.7', step:0.05, options:['0.5','0.7','0.9']},
   pag_scale:       {value:'1',    step:0.1,  options:['0.5','0.75','1','1.5']},
   pag_start:       {value:'0',    step:0.05, options:['0','0.1','0.25']},
   pag_end:         {value:'1',    step:0.05, options:['0.75','0.9','1']},
@@ -289,11 +337,14 @@ const COMBO_FIELDS = {
   vae_tile_size:   {value:'32',  step:1,    options:['32','64','68','128','256','512']},
   img2img_denoise: {value:'0', step:0.05, options:['0','0.15','0.35','0.5','0.65','0.75','0.9']},
   img2img_noise_add: {value:'0', step:0.05, options:['0','0.1','0.25','0.5','0.75','1']},
+  ref_boost:       {value:'4',   step:0.5,  options:['0.5','1','2','4','6','10']},
+  ref_boost_a:     {value:'1',   step:0.5,  options:['1','2','4']},
+  grounding_px:    {value:'768', step:64,   options:['384','512','640','768']},
+  fit_mode:        {value:'fit', options:['fit','crop']},
 };
-const NUMERIC_FIELDS = ['seed','steps','cfg','flow_shift','pag_scale','pag_start','pag_end','hires_steps','hires_denoise','vae_tile_size','img2img_denoise','img2img_noise_add'];
-const TEXT_FIELDS = ['sampler','scheduler','hires_upscaler','extra_sample_args','pag_layers'];
+const NUMERIC_FIELDS = ['seed','steps','cfg','flow_shift','pag_scale','pag_start','pag_end','hires_steps','hires_denoise','vae_tile_size','img2img_denoise','img2img_noise_add','ref_boost','ref_boost_a','grounding_px','beta_schedule_alpha','beta_schedule_beta'];
+const TEXT_FIELDS = ['sampler','scheduler','hires_upscaler','extra_sample_args','pag_layers','fit_mode'];
 
-let presets = {};
 let openComboList = null;
 
 function buildEditableCombobox(container){
@@ -348,20 +399,6 @@ function splitResolution(text){
   return [parts[0], parts[1]];
 }
 
-function applyPreset(name){
-  const preset = presets[name];
-  if (!preset) return;
-  $('resolution').value = `${preset.width}x${preset.height}`;
-  $('hires_resolution').value = `${preset.hires_width}x${preset.hires_height}`;
-  ['steps','cfg','pag_scale','pag_start','pag_end','hires_steps','hires_denoise','vae_tile_size'].forEach(k => {
-    if (preset[k] !== undefined) $(k).value = preset[k];
-  });
-  $('hires').checked = !!preset.hires;
-  $('save_lowres').checked = !!preset.save_lowres;
-  $('pag_enabled').checked = !!preset.pag_enabled;
-  if (preset.pag_layers !== undefined) $('pag_layers').value = preset.pag_layers;
-}
-
 let sessionToken = null;
 let selectedSourceImage = '';
 const outputCache = new Map();
@@ -407,33 +444,55 @@ function chooseSourceImage(){
   $('sourceImageFile').click();
 }
 
-async function uploadSourceImage(file){
-  if (!file) return;
+function isSupportedSourceImageFile(file){
+  if (!file) return false;
   if (file.type && !['image/png', 'image/jpeg'].includes(file.type)) {
     alert('Please choose a PNG or JPEG image.');
-    return;
+    return false;
   }
+  return true;
+}
+
+async function uploadImageFileToSourceLibrary(file){
+  const safeHeaderName = file.name.replace(/[^\x20-\x7e]/g, '-');
+  const response = await fetch('/api/source-image', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${sessionToken || ''}`,
+      'Content-Type': file.type || 'application/octet-stream',
+      'X-Filename': safeHeaderName,
+    },
+    body: file,
+  });
+  if (response.status === 401) {
+    showLoginGate('Session ended. Please log in again.');
+    throw new Error('not logged in');
+  }
+  if (!response.ok) throw new Error(await response.text());
+  const uploaded = await response.json();
+  outputCache.set(uploaded.name, {...uploaded, params: {}});
+  outputListLoaded = false;
+  return uploaded;
+}
+
+function attachImageDropZoneBehavior(dropZoneElement, handleDroppedImageFile){
+  ['dragenter', 'dragover'].forEach(type => dropZoneElement.addEventListener(type, event => {
+    event.preventDefault();
+    dropZoneElement.classList.add('dragging');
+  }));
+  ['dragleave', 'drop'].forEach(type => dropZoneElement.addEventListener(type, event => {
+    event.preventDefault();
+    dropZoneElement.classList.remove('dragging');
+  }));
+  dropZoneElement.addEventListener('drop', event => handleDroppedImageFile(event.dataTransfer.files[0]));
+}
+
+async function uploadSourceImage(file){
+  if (!isSupportedSourceImageFile(file)) return;
   $('selectedSourceStatus').textContent = 'Uploading source image…';
   $('selectedSourceResolution').textContent = file.name;
-  const safeHeaderName = file.name.replace(/[^\x20-\x7e]/g, '-');
   try {
-    const response = await fetch('/api/source-image', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${sessionToken || ''}`,
-        'Content-Type': file.type || 'application/octet-stream',
-        'X-Filename': safeHeaderName,
-      },
-      body: file,
-    });
-    if (response.status === 401) {
-      showLoginGate('Session ended. Please log in again.');
-      throw new Error('not logged in');
-    }
-    if (!response.ok) throw new Error(await response.text());
-    const uploaded = await response.json();
-    outputCache.set(uploaded.name, {...uploaded, params: {}});
-    outputListLoaded = false;
+    const uploaded = await uploadImageFileToSourceLibrary(file);
     await setSourceImage(uploaded.name);
     if ($('resultsTabOutput').classList.contains('active')) await loadAllOutputs(true);
   } catch (e) {
@@ -445,17 +504,72 @@ async function uploadSourceImage(file){
 }
 
 $('sourceImageFile').addEventListener('change', event => uploadSourceImage(event.target.files[0]));
-const sourceDropZone = $('selectedSourcePreview');
-['dragenter', 'dragover'].forEach(type => sourceDropZone.addEventListener(type, event => {
-  event.preventDefault();
-  sourceDropZone.classList.add('dragging');
-}));
-['dragleave', 'drop'].forEach(type => sourceDropZone.addEventListener(type, event => {
-  event.preventDefault();
-  sourceDropZone.classList.remove('dragging');
-}));
-sourceDropZone.addEventListener('drop', event => uploadSourceImage(event.dataTransfer.files[0]));
+attachImageDropZoneBehavior($('selectedSourcePreview'), uploadSourceImage);
 setSourceImage('');
+
+let selectedKrea2EditReferenceImage = '';
+
+async function setKrea2EditReferenceImage(name){
+  selectedKrea2EditReferenceImage = name || '';
+  const thumb = $('krea2EditReferenceThumb');
+  const dropHint = $('krea2EditReferenceDropHint');
+  if (!selectedKrea2EditReferenceImage) {
+    thumb.removeAttribute('src');
+    thumb.hidden = true;
+    dropHint.hidden = false;
+    $('krea2EditReferenceStatus').textContent = 'No reference image selected';
+    $('krea2EditReferenceName').textContent = '';
+    $('krea2EditReferenceResolution').textContent = 'Drag a PNG/JPEG here or load one from disk.';
+    return;
+  }
+  const selectedName = selectedKrea2EditReferenceImage;
+  thumb.hidden = false;
+  dropHint.hidden = true;
+  thumb.src = outputThumbUrl(selectedName);
+  $('krea2EditReferenceStatus').textContent = 'Reference image selected';
+  $('krea2EditReferenceName').textContent = selectedName;
+  $('krea2EditReferenceResolution').textContent = 'Reading resolution…';
+  try {
+    const cached = outputCache.get(selectedName);
+    const info = cached?.width && cached?.height ? cached : await api(`/api/output-info/${encodeURIComponent(selectedName)}`);
+    if (selectedKrea2EditReferenceImage === selectedName) {
+      $('krea2EditReferenceResolution').textContent = `${info.width}×${info.height}`;
+    }
+  } catch (e) {
+    if (selectedKrea2EditReferenceImage === selectedName) $('krea2EditReferenceResolution').textContent = 'Resolution unavailable';
+  }
+}
+
+function chooseKrea2EditReferenceImage(){
+  $('krea2EditReferenceFile').click();
+}
+
+async function uploadKrea2EditReferenceImage(file){
+  if (!isSupportedSourceImageFile(file)) return;
+  $('krea2EditReferenceStatus').textContent = 'Uploading reference image…';
+  $('krea2EditReferenceResolution').textContent = file.name;
+  try {
+    const uploaded = await uploadImageFileToSourceLibrary(file);
+    await setKrea2EditReferenceImage(uploaded.name);
+    if ($('resultsTabOutput').classList.contains('active')) await loadAllOutputs(true);
+  } catch (e) {
+    await setKrea2EditReferenceImage('');
+    alert(`Could not load reference image: ${e.message}`);
+  } finally {
+    $('krea2EditReferenceFile').value = '';
+  }
+}
+
+function toggleKrea2EditPanelSettings(){
+  const settingsAreHidden = $('krea2EditPanel').classList.toggle('collapsed');
+  const toggleButton = $('krea2EditCollapseToggle');
+  toggleButton.textContent = settingsAreHidden ? 'v' : '^';
+  toggleButton.title = settingsAreHidden ? 'Show Krea2 Edit settings' : 'Hide Krea2 Edit settings';
+}
+
+$('krea2EditReferenceFile').addEventListener('change', event => uploadKrea2EditReferenceImage(event.target.files[0]));
+attachImageDropZoneBehavior($('krea2EditReferencePreview'), uploadKrea2EditReferenceImage);
+setKrea2EditReferenceImage('');
 
 function selectResultsTab(name){
   document.querySelectorAll('.result-tab').forEach(tab =>
@@ -564,6 +678,8 @@ function formatJobDetails(params){
     ['Sampler', p.sampler || ''],
     ['Scheduler', p.scheduler || ''],
     ['Flow shift', p.flow_shift ?? ''],
+    ['Beta alpha', p.scheduler === 'beta' ? (p.beta_schedule_alpha ?? '') : ''],
+    ['Beta beta', p.scheduler === 'beta' ? (p.beta_schedule_beta ?? '') : ''],
     ['Extra args', p.extra_sample_args || ''],
     ['PAG', p.pag_enabled ? 'On' : 'Off'],
     ['PAG scale', p.pag_enabled ? (p.pag_scale ?? '') : ''],
@@ -649,7 +765,7 @@ function loadParamsIntoForm(p){
   p.prompt = p.prompt.replace(/\s*<sd_cpp_extra_args>[\s\S]*?<\/sd_cpp_extra_args>\s*$/, '');
   ['prompt','negative_prompt'].forEach(id => { if ($(id)) $(id).value = p[id] || ''; });
   $('extra_sample_args').value = p.extra_sample_args || p.krea_extra_sample_args || '';
-  ['resolution','seed','steps','cfg','sampler','scheduler','flow_shift','pag_scale','pag_start','pag_end','pag_layers','hires_resolution',
+  ['resolution','seed','steps','cfg','sampler','scheduler','flow_shift','beta_schedule_alpha','beta_schedule_beta','pag_scale','pag_start','pag_end','pag_layers','hires_resolution',
    'hires_steps','hires_denoise','hires_upscaler','vae_tile_size','img2img_denoise','img2img_noise_add'].forEach(id => {
     if ($(id) && p[id] !== undefined) $(id).value = p[id];
   });
@@ -818,11 +934,6 @@ async function startApp(){
   } catch (e) {
     $('loraList').textContent = `LoRA list unavailable: ${e.message}`;
   }
-
-  presets = await api('/api/presets');
-  $('preset').innerHTML = Object.keys(presets).map(name => `<option>${escapeHtml(name)}</option>`).join('');
-  $('preset').onchange = () => applyPreset($('preset').value);
-  applyPreset(Object.keys(presets)[0]);
 
   document.addEventListener('mousedown', e => {
     if (openComboList && !e.target.closest('.combo')) {

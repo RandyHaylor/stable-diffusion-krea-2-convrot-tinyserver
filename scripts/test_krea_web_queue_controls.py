@@ -36,11 +36,11 @@ stub_state = {
 
 
 STUB_CAPABILITIES = {
-    "samplers": ["euler", "res_2s", "dpm++2m"],
+    "samplers": ["euler", "er_sde", "res_2s"],
     "schedulers": ["discrete", "beta", "karras"],
     "upscalers": [{"name": "Latent"}, {"name": "Lanczos"}],
     "limits": {"min_width": 64, "max_width": 4096, "min_height": 64, "max_height": 4096},
-    "loras": [{"name": "krea2_raw_to_turbo_r256", "path": "krea2_raw_to_turbo_r256.safetensors"}],
+    "loras": [{"name": "stub-lora", "path": "stub-lora.safetensors"}],
     "model": {"name": "stub-model.safetensors"},
 }
 
@@ -95,13 +95,13 @@ def build_job_params(prompt: str) -> dict:
     return {
         "prompt": prompt, "negative_prompt": "",
         "width": 64, "height": 64, "steps": 1, "cfg": 1.0, "seed": 1,
-        "lora_strength": 0.6, "sampler": "res_2s", "scheduler": "beta",
+        "lora_strength": 0.6, "sampler": "er_sde", "scheduler": "discrete",
         "flow_shift": 1.15, "extra_sample_args": "", "vae_tile_size": 32,
+        "beta_schedule_alpha": 0.5, "beta_schedule_beta": 0.7,
         "pag_enabled": True, "pag_scale": 0.8, "pag_layers": "7,9",
         "pag_start": 0.1, "pag_end": 0.9,
         "hires": False, "hires_width": 128, "hires_height": 128,
         "hires_steps": 1, "hires_denoise": 0.5, "save_lowres": False,
-        "use_turbo_lora": True,
     }
 
 
@@ -189,8 +189,6 @@ def main() -> int:
     check("unauthenticated request is rejected", client.get("/api/state").status_code == 401)
     check("a bogus bearer token is rejected",
           client.get("/api/state", headers={"Authorization": "Bearer not-a-real-token"}).status_code == 401)
-    check("presets endpoint lists Turbo 1024 → 2048",
-          "Turbo 1024 → 2048" in client.get("/api/presets", headers=session_headers).json())
     check("prompt is required",
           client.post("/api/jobs", json={"params": build_job_params("")}, headers=session_headers).status_code == 400)
 
@@ -275,27 +273,30 @@ def main() -> int:
     check("backend options expose the resolution limits",
           backend_options["limits"]["max_width"] == 4096)
 
-    turbo_on_request = find_generation_request_for_prompt("third")
-    native_args = json.loads(turbo_on_request["prompt"].split("<sd_cpp_extra_args>", 1)[1].split("</sd_cpp_extra_args>", 1)[0])
+    front_inserted_request = find_generation_request_for_prompt("third")
+    native_args = json.loads(front_inserted_request["prompt"].split("<sd_cpp_extra_args>", 1)[1].split("</sd_cpp_extra_args>", 1)[0])
     check("PAG settings are sent in native main-stage sample params",
           native_args["sample_params"].get("pag") == {
               "enabled": True, "scale": 0.8, "layers": [7, 9], "start": 0.1, "end": 0.9,
           }, f"pag={native_args['sample_params'].get('pag')}")
-    check("turbo LoRA is sent when the checkbox is on",
-          turbo_on_request.get("lora") == [{"path": krea_web.TURBO_LORA_FILENAME, "multiplier": 0.6,
-                                            "is_high_noise": False}],
-          f"lora={turbo_on_request.get('lora')}")
+    check("no lora key is sent when the user selected none",
+          "lora" not in front_inserted_request, f"keys={sorted(front_inserted_request)}")
+    check("beta schedule args are omitted for a non-beta scheduler",
+          "alpha=" not in native_args["sample_params"]["extra_sample_args"],
+          f"extra_sample_args={native_args['sample_params']['extra_sample_args']!r}")
 
-    turbo_off_params = build_job_params("turbo-off")
-    turbo_off_params["use_turbo_lora"] = False
-    client.post("/api/jobs", json={"params": turbo_off_params}, headers=session_headers)
+    beta_schedule_params = build_job_params("beta-schedule")
+    beta_schedule_params["scheduler"] = "beta"
+    client.post("/api/jobs", json={"params": beta_schedule_params}, headers=session_headers)
     wait_until(lambda: next((j for j in client.get("/api/state", headers=session_headers).json()["history"]
-                             if (j["params"] or {}).get("prompt") == "turbo-off"
+                             if (j["params"] or {}).get("prompt") == "beta-schedule"
                              and j["status"] == "completed"), None),
-               20, "turbo-off job to complete")
-    turbo_off_request = find_generation_request_for_prompt("turbo-off")
-    check("no lora key is sent when the checkbox is off",
-          "lora" not in turbo_off_request, f"keys={sorted(turbo_off_request)}")
+               20, "beta-schedule job to complete")
+    beta_schedule_request = find_generation_request_for_prompt("beta-schedule")
+    beta_native_args = json.loads(beta_schedule_request["prompt"].split("<sd_cpp_extra_args>", 1)[1].split("</sd_cpp_extra_args>", 1)[0])
+    check("beta schedule alpha and beta are sent as extra sample args for the beta scheduler",
+          beta_native_args["sample_params"]["extra_sample_args"] == "alpha=0.5,beta=0.7",
+          f"extra_sample_args={beta_native_args['sample_params']['extra_sample_args']!r}")
 
     check_server_log_tail_reader(check)
     check("server log endpoint requires authentication",
@@ -310,41 +311,34 @@ def main() -> int:
     available_loras = client.get("/api/loras", headers=session_headers).json()["loras"]
     check("lora listing exposes every safetensors file in the lora directory",
           {entry["filename"] for entry in available_loras}
-          == {path.name for path in krea_web.LORA_DIR.glob("*.safetensors")
-              if path.name != krea_web.TURBO_LORA_FILENAME},
+          == {path.name for path in krea_web.LORA_DIR.glob("*.safetensors")},
           f"listed={[e['filename'] for e in available_loras]}")
-    check("lora listing excludes the turbo lora, which has its own checkbox",
-          all(entry["filename"] != krea_web.TURBO_LORA_FILENAME for entry in available_loras))
 
     if available_loras:
-        extra_lora_filename = available_loras[0]["filename"]
-        extra_lora_params = build_job_params("extra-loras")
-        extra_lora_params["use_turbo_lora"] = True
-        extra_lora_params["extra_loras"] = [{"filename": extra_lora_filename, "strength": 0.8}]
-        client.post("/api/jobs", json={"params": extra_lora_params}, headers=session_headers)
+        selected_lora_filename = available_loras[0]["filename"]
+        selected_lora_params = build_job_params("selected-loras")
+        selected_lora_params["extra_loras"] = [{"filename": selected_lora_filename, "strength": 0.8}]
+        client.post("/api/jobs", json={"params": selected_lora_params}, headers=session_headers)
         wait_until(lambda: next((j for j in client.get("/api/state", headers=session_headers).json()["history"]
-                                 if (j["params"] or {}).get("prompt") == "extra-loras"
+                                 if (j["params"] or {}).get("prompt") == "selected-loras"
                                  and j["status"] == "completed"), None),
-                   20, "extra-lora job to complete")
-        extra_lora_request = find_generation_request_for_prompt("extra-loras")
-        sent_loras = extra_lora_request.get("lora", [])
-        check("checked lora is sent with its own strength alongside the turbo lora",
-              {"path": extra_lora_filename, "multiplier": 0.8, "is_high_noise": False} in sent_loras
-              and any(entry["path"] == krea_web.TURBO_LORA_FILENAME for entry in sent_loras),
-              f"lora={sent_loras}")
+                   20, "selected-lora job to complete")
+        selected_lora_request = find_generation_request_for_prompt("selected-loras")
+        check("selected lora is sent with exactly its own strength and nothing else",
+              selected_lora_request.get("lora")
+              == [{"path": selected_lora_filename, "multiplier": 0.8, "is_high_noise": False}],
+              f"lora={selected_lora_request.get('lora')}")
 
-        unchecked_params = build_job_params("no-extra-loras")
-        unchecked_params["extra_loras"] = []
-        client.post("/api/jobs", json={"params": unchecked_params}, headers=session_headers)
+        unselected_params = build_job_params("no-selected-loras")
+        unselected_params["extra_loras"] = []
+        client.post("/api/jobs", json={"params": unselected_params}, headers=session_headers)
         wait_until(lambda: next((j for j in client.get("/api/state", headers=session_headers).json()["history"]
-                                 if (j["params"] or {}).get("prompt") == "no-extra-loras"
+                                 if (j["params"] or {}).get("prompt") == "no-selected-loras"
                                  and j["status"] == "completed"), None),
-                   20, "no-extra-lora job to complete")
-        unchecked_request = find_generation_request_for_prompt("no-extra-loras")
-        check("unchecked loras are not sent to the backend",
-              [entry["path"] for entry in unchecked_request.get("lora", [])]
-              == [krea_web.TURBO_LORA_FILENAME],
-              f"lora={unchecked_request.get('lora')}")
+                   20, "no-selected-lora job to complete")
+        unselected_request = find_generation_request_for_prompt("no-selected-loras")
+        check("unselected loras are not sent to the backend",
+              "lora" not in unselected_request, f"keys={sorted(unselected_request)}")
 
     check("logout invalidates the token immediately",
           client.post("/api/logout", headers=session_headers).status_code == 200

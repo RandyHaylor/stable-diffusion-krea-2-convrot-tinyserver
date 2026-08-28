@@ -163,28 +163,19 @@ def actual_seeds_from_backend_result(result: dict, image_count: int, fallback_se
             concrete.append(int(fallback_seed))
     return concrete
 
-PRESETS = {
-    "Turbo 1024": dict(width=1024, height=1024, steps=6, cfg=1.0,
-                       hires=False, hires_width=1536, hires_height=1536,
-                       hires_steps=3, hires_denoise=0.5, save_lowres=False,
-                       pag_enabled=False, pag_scale=1.0, pag_layers="7", pag_start=0.0, pag_end=1.0,
-                       vae_tile_size=32),
-    "Turbo 768 → 1536": dict(width=768, height=768, steps=3, cfg=1.0,
-                             hires=True, hires_width=1536, hires_height=1536,
-                             hires_steps=3, hires_denoise=0.5, save_lowres=True,
-                             pag_enabled=False, pag_scale=1.0, pag_layers="7", pag_start=0.0, pag_end=1.0,
-                             vae_tile_size=32),
-    "Turbo 1024 → 2048": dict(width=1024, height=1024, steps=6, cfg=1.0,
-                              hires=True, hires_width=2048, hires_height=2048,
-                              hires_steps=3, hires_denoise=0.5, save_lowres=True,
-                              pag_enabled=False, pag_scale=1.0, pag_layers="7", pag_start=0.0, pag_end=1.0,
-                              vae_tile_size=32),
-    "Turbo custom": dict(width=1024, height=1024, steps=6, cfg=1.0,
-                         hires=False, hires_width=1536, hires_height=1536,
-                         hires_steps=3, hires_denoise=0.5, save_lowres=False,
-                         pag_enabled=False, pag_scale=1.0, pag_layers="7", pag_start=0.0, pag_end=1.0,
-                         vae_tile_size=32),
-}
+
+def extra_sample_args_including_scheduler_settings(p: dict) -> str:
+    """The user's own extra sample args, plus the settings the chosen scheduler accepts.
+
+    Only the beta scheduler reads alpha and beta, so sending them with any other
+    scheduler would be inert noise in the request and in the saved metadata.
+    """
+    user_supplied_args = str(p.get("extra_sample_args", "")).strip()
+    if p.get("scheduler") != "beta":
+        return user_supplied_args
+    beta_schedule_args = (f"alpha={float(p.get('beta_schedule_alpha', 0.5)):g}"
+                          f",beta={float(p.get('beta_schedule_beta', 0.7)):g}")
+    return f"{user_supplied_args},{beta_schedule_args}" if user_supplied_args else beta_schedule_args
 
 
 class SessionTokenStore:
@@ -350,7 +341,7 @@ class QueueManager:
         sample = {
             "sample_method": p["sampler"], "scheduler": p["scheduler"],
             "sample_steps": int(p["steps"]), "flow_shift": float(p["flow_shift"]),
-            "extra_sample_args": p["extra_sample_args"],
+            "extra_sample_args": extra_sample_args_including_scheduler_settings(p),
             "guidance": {"txt_cfg": float(p["cfg"])},
             "pag": {
                 "enabled": bool(p.get("pag_enabled", False)),
@@ -544,10 +535,6 @@ def build_app(user: str, password: str, backend: str) -> FastAPI:
     def logout(token: str = Depends(authenticate)):
         session_tokens.revoke(token)
         return {"status": "logged out"}
-
-    @app.get("/api/presets")
-    def presets(_: str = Depends(authenticate)):
-        return PRESETS
 
     @app.get("/api/loras")
     def available_loras(_: str = Depends(authenticate)):

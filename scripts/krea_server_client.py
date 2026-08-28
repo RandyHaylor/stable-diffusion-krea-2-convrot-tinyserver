@@ -21,7 +21,7 @@ def main() -> int:
     parser.add_argument("--steps", type=int, default=8)
     parser.add_argument("--cfg", type=float, default=1.0)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--sampler", default="euler")
+    parser.add_argument("--sampler", default="er_sde")
     parser.add_argument("--scheduler", default="discrete")
     parser.add_argument("--extra-sample-args")
     parser.add_argument("--flow-shift", type=float)
