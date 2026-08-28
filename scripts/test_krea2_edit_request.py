@@ -15,7 +15,7 @@ from krea2_edit_request import (  # noqa: E402
     is_krea2_edit_enabled,
     krea2_edit_native_args_fields,
     krea2_edit_payload_fields,
-    krea2_edit_reference_filenames,
+    krea2_edit_references,
 )
 
 failures: list[str] = []
@@ -29,10 +29,11 @@ def check(description: str, condition: bool, detail: str = "") -> None:
         print(f"FAIL: {description}" + (f" {detail}" if detail else ""))
 
 
-def enabled_params(**overrides) -> dict:
+def enabled_params(references=None, **overrides) -> dict:
     params = {
         "krea2_edit_enabled": True,
-        "krea2_edit_reference_image": "scene.png",
+        "krea2_edit_references": ([{"filename": "scene.png", "ref_boost": 1}]
+                                  if references is None else references),
         "grounding_px": 768,
     }
     params.update(overrides)
@@ -48,86 +49,97 @@ def main() -> int:
           not is_krea2_edit_enabled({}))
     check("edit mode is off when the flag is false",
           not is_krea2_edit_enabled(enabled_params(krea2_edit_enabled=False)))
-    check("edit mode is off when enabled but no reference image is selected",
-          not is_krea2_edit_enabled(enabled_params(krea2_edit_reference_image="")),
-          "an enabled checkbox with no image must not change the request")
-    check("edit mode is on when enabled with a reference image",
+    check("edit mode is off when enabled with an empty reference list",
+          not is_krea2_edit_enabled(enabled_params(references=[])),
+          "an enabled checkbox with no images must not change the request")
+    check("edit mode is on when enabled with at least one reference",
           is_krea2_edit_enabled(enabled_params()))
 
-    check("reference filenames are empty when disabled",
-          krea2_edit_reference_filenames({}) == [])
-    check("a single reference filename is returned",
-          krea2_edit_reference_filenames(enabled_params()) == ["scene.png"])
-    check("scene is ordered before subject for two-image edits",
-          krea2_edit_reference_filenames(
-              enabled_params(krea2_edit_reference_image_b="person.png"))
+    check("references are empty when disabled",
+          krea2_edit_references({}) == [])
+    check("a reference without a filename is dropped",
+          krea2_edit_references(enabled_params(references=[{"filename": "", "ref_boost": 4}])) == [],
+          "an empty panel must not reach the backend")
+    check("references keep the order the user arranged them in",
+          [reference["filename"] for reference in krea2_edit_references(
+              enabled_params(references=[{"filename": "scene.png", "ref_boost": 1},
+                                         {"filename": "person.png", "ref_boost": 4}]))]
           == ["scene.png", "person.png"],
           "training order is scene first, subject second")
-    check("a subject without a scene is not sent alone",
-          krea2_edit_reference_filenames(
-              enabled_params(krea2_edit_reference_image="",
-                             krea2_edit_reference_image_b="person.png")) == [])
+    check("an arbitrary number of references is supported",
+          len(krea2_edit_references(enabled_params(references=[
+              {"filename": f"reference-{index}.png", "ref_boost": 1} for index in range(5)]))) == 5)
+    check("a missing per-reference boost defaults to neutral",
+          krea2_edit_references(enabled_params(references=[{"filename": "scene.png"}]))[0]["ref_boost"] == 1.0)
 
     check("ref image args select the krea2_edit preset and carry grounding size",
           build_krea2_edit_ref_image_args(enabled_params())
           == "preset=krea2_edit,vlm_size=768",
           f"got {build_krea2_edit_ref_image_args(enabled_params())!r}")
-    check("a reference fidelity above one is sent as ref_boost",
-          build_krea2_edit_ref_image_args(enabled_params(ref_boost=4))
-          == "preset=krea2_edit,vlm_size=768,ref_boost=4",
-          f"got {build_krea2_edit_ref_image_args(enabled_params(ref_boost=4))!r}")
-    check("a fractional reference fidelity keeps its precision",
-          build_krea2_edit_ref_image_args(enabled_params(ref_boost=2.5))
-          == "preset=krea2_edit,vlm_size=768,ref_boost=2.5")
-    check("a reference fidelity of exactly one is omitted, leaving attention untouched",
-          build_krea2_edit_ref_image_args(enabled_params(ref_boost=1))
-          == "preset=krea2_edit,vlm_size=768",
-          "1.0 is the no-op value, so it should not appear in the args")
-    check("a non-positive reference fidelity is omitted rather than sent",
-          build_krea2_edit_ref_image_args(enabled_params(ref_boost=0))
-          == "preset=krea2_edit,vlm_size=768")
     check("grounding size follows the requested value",
           build_krea2_edit_ref_image_args(enabled_params(grounding_px=384))
           == "preset=krea2_edit,vlm_size=384")
-    check("a missing grounding size falls back to the trained default",
-          build_krea2_edit_ref_image_args({"krea2_edit_enabled": True})
-          == "preset=krea2_edit,vlm_size=768")
     check("a non-positive grounding size omits the vlm size entirely",
           build_krea2_edit_ref_image_args(enabled_params(grounding_px=0))
           == "preset=krea2_edit",
           "zero means native resolution, so no cap should be sent")
 
+    single_boosted = enabled_params(references=[{"filename": "scene.png", "ref_boost": 4}])
+    check("a boosted single reference emits one ref_boost key",
+          build_krea2_edit_ref_image_args(single_boosted)
+          == "preset=krea2_edit,vlm_size=768,ref_boost=4",
+          f"got {build_krea2_edit_ref_image_args(single_boosted)!r}")
+
+    per_reference_boosts = enabled_params(references=[
+        {"filename": "scene.png", "ref_boost": 1},
+        {"filename": "person.png", "ref_boost": 4},
+    ])
+    check("each reference emits its own ref_boost key, in reference order",
+          build_krea2_edit_ref_image_args(per_reference_boosts)
+          == "preset=krea2_edit,vlm_size=768,ref_boost=1,ref_boost=4",
+          f"got {build_krea2_edit_ref_image_args(per_reference_boosts)!r}")
+
+    all_neutral = enabled_params(references=[
+        {"filename": "scene.png", "ref_boost": 1},
+        {"filename": "person.png", "ref_boost": 1},
+    ])
+    check("all-neutral boosts are omitted, leaving attention untouched",
+          build_krea2_edit_ref_image_args(all_neutral) == "preset=krea2_edit,vlm_size=768",
+          "neutral everywhere means the runtime should build no mask at all")
+
+    check("a fractional boost keeps its precision",
+          build_krea2_edit_ref_image_args(
+              enabled_params(references=[{"filename": "scene.png", "ref_boost": 2.5}]))
+          == "preset=krea2_edit,vlm_size=768,ref_boost=2.5")
+    check("a non-positive boost is sent as neutral rather than rejected by the runtime",
+          build_krea2_edit_ref_image_args(
+              enabled_params(references=[{"filename": "a.png", "ref_boost": 0},
+                                         {"filename": "b.png", "ref_boost": 4}]))
+          == "preset=krea2_edit,vlm_size=768,ref_boost=1,ref_boost=4",
+          "positions must stay aligned with the reference list")
+
     check("no payload fields are produced when edit mode is off",
           krea2_edit_payload_fields({}, fake_reference_image_loader) == {})
 
-    single_reference_fields = krea2_edit_payload_fields(
-        enabled_params(), fake_reference_image_loader)
-    check("the reference is sent as a base64 extra image",
-          single_reference_fields["extra_images"] == ["base64-of-scene.png"],
-          f"got {single_reference_fields.get('extra_images')}")
+    payload_fields = krea2_edit_payload_fields(per_reference_boosts, fake_reference_image_loader)
+    check("every reference is sent as a base64 extra image, in order",
+          payload_fields["extra_images"] == ["base64-of-scene.png", "base64-of-person.png"],
+          f"got {payload_fields.get('extra_images')}")
     check("ref image args are not put in the payload body, which would drop them",
-          "ref_image_args" not in single_reference_fields,
+          "ref_image_args" not in payload_fields,
           "the sdapi route reads only named fields; ref_image_args must travel in the native args")
     check("ref image args travel in the native sd_cpp_extra_args block",
-          krea2_edit_native_args_fields(enabled_params())
-          == {"ref_image_args": "preset=krea2_edit,vlm_size=768"},
-          f"got {krea2_edit_native_args_fields(enabled_params())}")
+          krea2_edit_native_args_fields(per_reference_boosts)
+          == {"ref_image_args": "preset=krea2_edit,vlm_size=768,ref_boost=1,ref_boost=4"},
+          f"got {krea2_edit_native_args_fields(per_reference_boosts)}")
     check("no native args are produced when edit mode is off",
           krea2_edit_native_args_fields({}) == {})
     check("edit mode never sets init_images, which would make it img2img",
-          "init_images" not in single_reference_fields,
-          f"keys={sorted(single_reference_fields)}")
+          "init_images" not in payload_fields,
+          f"keys={sorted(payload_fields)}")
     check("edit mode never sets denoising_strength; the target starts as pure noise",
-          "denoising_strength" not in single_reference_fields,
-          f"keys={sorted(single_reference_fields)}")
-
-    two_reference_fields = krea2_edit_payload_fields(
-        enabled_params(krea2_edit_reference_image_b="person.png"),
-        fake_reference_image_loader)
-    check("both references are sent in scene-then-subject order",
-          two_reference_fields["extra_images"]
-          == ["base64-of-scene.png", "base64-of-person.png"],
-          f"got {two_reference_fields['extra_images']}")
+          "denoising_strength" not in payload_fields,
+          f"keys={sorted(payload_fields)}")
 
     print()
     if failures:

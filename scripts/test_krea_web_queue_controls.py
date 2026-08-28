@@ -305,9 +305,17 @@ def main() -> int:
                                      headers={**session_headers,
                                               "Content-Type": "image/png",
                                               "X-Filename": "krea2-edit-reference.png"}).json()
+    uploaded_second_reference = client.post("/api/source-image",
+                                            content=base64.b64decode(ONE_PIXEL_PNG_BASE64),
+                                            headers={**session_headers,
+                                                     "Content-Type": "image/png",
+                                                     "X-Filename": "krea2-edit-subject.png"}).json()
     krea2_edit_params = build_job_params("krea2-edit")
     krea2_edit_params["krea2_edit_enabled"] = True
-    krea2_edit_params["krea2_edit_reference_image"] = uploaded_reference["name"]
+    krea2_edit_params["krea2_edit_references"] = [
+        {"filename": uploaded_reference["name"], "ref_boost": 1},
+        {"filename": uploaded_second_reference["name"], "ref_boost": 4},
+    ]
     krea2_edit_params["grounding_px"] = 768
     client.post("/api/jobs", json={"params": krea2_edit_params}, headers=session_headers)
     wait_until(lambda: next((j for j in client.get("/api/state", headers=session_headers).json()["history"]
@@ -315,12 +323,13 @@ def main() -> int:
                              and j["status"] == "completed"), None),
                20, "krea2-edit job to complete")
     krea2_edit_request = find_generation_request_for_prompt("krea2-edit")
-    check("krea2 edit sends the reference as an extra image",
-          len(krea2_edit_request.get("extra_images", [])) == 1,
+    check("krea2 edit sends every reference as an extra image",
+          len(krea2_edit_request.get("extra_images", [])) == 2,
           f"extra_images count={len(krea2_edit_request.get('extra_images', []))}")
     krea2_edit_native_args = json.loads(krea2_edit_request["prompt"].split("<sd_cpp_extra_args>", 1)[1].split("</sd_cpp_extra_args>", 1)[0])
-    check("krea2 edit selects the krea2_edit reference-image preset in the native args",
-          krea2_edit_native_args.get("ref_image_args") == "preset=krea2_edit,vlm_size=768",
+    check("krea2 edit selects the preset and one ref_boost per reference, in order",
+          krea2_edit_native_args.get("ref_image_args")
+          == "preset=krea2_edit,vlm_size=768,ref_boost=1,ref_boost=4",
           f"ref_image_args={krea2_edit_native_args.get('ref_image_args')!r}")
     check("krea2 edit uses txt2img, since the target starts as pure noise",
           stub_state["generation_paths"][-1] == "/sdapi/v1/txt2img",

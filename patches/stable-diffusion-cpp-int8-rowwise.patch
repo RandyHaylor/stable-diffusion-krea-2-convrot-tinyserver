@@ -215,7 +215,7 @@ index bab62ba..7348611 100644
  } sd_sample_params_t;
  
 diff --git a/src/model/diffusion/krea2.hpp b/src/model/diffusion/krea2.hpp
-index b3947b7..6c22bfa 100644
+index b3947b7..3357fdb 100644
 --- a/src/model/diffusion/krea2.hpp
 +++ b/src/model/diffusion/krea2.hpp
 @@ -261,7 +261,8 @@ namespace Krea2 {
@@ -318,27 +318,42 @@ index b3947b7..6c22bfa 100644
                  sd::ggml_graph_cut::mark_graph_cut(hidden_states, "krea2.blocks." + std::to_string(i), "hidden_states");
              }
  
-@@ -706,10 +722,38 @@ namespace Krea2 {
+@@ -706,10 +722,53 @@ namespace Krea2 {
          return Rope::embed_nd(ids, bs, theta, axes_dim);
      }
  
 +    // Additive pre-softmax attention bias that scales how hard target tokens
-+    // attend to reference tokens. Adding log(boost) to those logits multiplies
++    // attend to each reference. Adding log(boost) to those logits multiplies
 +    // their post-softmax weight by boost before renormalization. The sequence is
 +    // laid out [text | target | refs], so only the target rows of the reference
-+    // columns are biased; text and reference rows are left alone.
++    // columns are biased; text and reference rows are left alone. Each reference
++    // occupies its own contiguous column range and takes its own boost.
 +    __STATIC_INLINE__ std::vector<float> gen_krea2_ref_boost_mask(int64_t sequence_len,
 +                                                                  int64_t text_len,
-+                                                                  int64_t ref_len,
-+                                                                  float ref_boost) {
++                                                                  const std::vector<int64_t>& ref_token_counts,
++                                                                  const std::vector<float>& ref_boosts) {
++        int64_t total_ref_len = 0;
++        for (int64_t ref_token_count : ref_token_counts) {
++            total_ref_len += ref_token_count;
++        }
 +        std::vector<float> mask(static_cast<size_t>(sequence_len * sequence_len), 0.f);
-+        const float bias        = std::log(ref_boost);
-+        const int64_t ref_start = sequence_len - ref_len;
-+        for (int64_t query = text_len; query < ref_start; ++query) {
-+            float* query_row = mask.data() + static_cast<size_t>(query * sequence_len);
-+            for (int64_t key = ref_start; key < sequence_len; ++key) {
-+                query_row[key] = bias;
++        const int64_t target_end = sequence_len - total_ref_len;
++        int64_t ref_key_start    = target_end;
++        for (size_t ref_index = 0; ref_index < ref_token_counts.size(); ++ref_index) {
++            const int64_t ref_key_end = ref_key_start + ref_token_counts[ref_index];
++            const float boost         = ref_boosts.size() == 1 ? ref_boosts[0]
++                                        : ref_index < ref_boosts.size() ? ref_boosts[ref_index]
++                                                                        : 1.0f;
++            if (boost != 1.0f) {
++                const float bias = std::log(boost);
++                for (int64_t query = text_len; query < target_end; ++query) {
++                    float* query_row = mask.data() + static_cast<size_t>(query * sequence_len);
++                    for (int64_t key = ref_key_start; key < ref_key_end; ++key) {
++                        query_row[key] = bias;
++                    }
++                }
 +            }
++            ref_key_start = ref_key_end;
 +        }
 +        return mask;
 +    }
@@ -357,7 +372,7 @@ index b3947b7..6c22bfa 100644
  
          Krea2Runner(ggml_backend_t backend,
                      const String2TensorStorage& tensor_storage_map      = {},
-@@ -733,7 +777,9 @@ namespace Krea2 {
+@@ -733,7 +792,9 @@ namespace Krea2 {
                                   const sd::Tensor<float>& timesteps_tensor,
                                   const sd::Tensor<float>& context_tensor,
                                   const std::vector<sd::Tensor<float>>& ref_latents_tensor = {},
@@ -368,23 +383,37 @@ index b3947b7..6c22bfa 100644
              ggml_cgraph* gf        = new_graph_custom(KREA2_GRAPH_SIZE);
              ggml_tensor* x         = make_input(x_tensor);
              ggml_tensor* timesteps = make_input(timesteps_tensor);
-@@ -760,8 +806,32 @@ namespace Krea2 {
+@@ -760,8 +821,46 @@ namespace Krea2 {
              auto pe     = ggml_new_tensor_4d(compute_ctx, GGML_TYPE_F32, 2, 2, config.axes_dim_sum / 2, pos_len);
              set_backend_tensor_data(pe, pe_vec.data());
  
 +            ggml_tensor* ref_boost_mask = nullptr;
-+            if (ref_image_params.ref_boost != 1.0f && !ref_latents.empty()) {
-+                int64_t ref_len = 0;
++            const auto& ref_boosts      = ref_image_params.ref_boosts;
++            bool any_boost_is_active    = std::any_of(ref_boosts.begin(), ref_boosts.end(),
++                                                      [](float boost) { return boost != 1.0f; });
++            if (any_boost_is_active && !ref_latents.empty()) {
++                std::vector<int64_t> ref_token_counts;
++                ref_token_counts.reserve(ref_latents.size());
 +                for (const ggml_tensor* ref_latent : ref_latents) {
-+                    ref_len += krea2_patch_token_count(ref_latent, config.patch_size);
++                    ref_token_counts.push_back(krea2_patch_token_count(ref_latent, config.patch_size));
++                }
++                if (ref_boosts.size() != 1 && ref_boosts.size() != ref_token_counts.size()) {
++                    LOG_WARN("%zu ref_boost values for %zu reference images; missing ones default to 1.0",
++                             ref_boosts.size(), ref_token_counts.size());
 +                }
 +                ref_boost_mask_vec = gen_krea2_ref_boost_mask(pos_len,
 +                                                              context->ne[1],
-+                                                              ref_len,
-+                                                              ref_image_params.ref_boost);
++                                                              ref_token_counts,
++                                                              ref_boosts);
 +                ref_boost_mask     = ggml_new_tensor_4d(compute_ctx, GGML_TYPE_F32, pos_len, pos_len, 1, 1);
 +                set_backend_tensor_data(ref_boost_mask, ref_boost_mask_vec.data());
-+                LOG_INFO("ref_boost %.3g applied over %ld reference tokens", ref_image_params.ref_boost, (long)ref_len);
++                for (size_t ref_index = 0; ref_index < ref_token_counts.size(); ++ref_index) {
++                    const float boost = ref_boosts.size() == 1 ? ref_boosts[0]
++                                        : ref_index < ref_boosts.size() ? ref_boosts[ref_index]
++                                                                        : 1.0f;
++                    LOG_INFO("ref_boost %.3g on reference %zu (%ld tokens)",
++                             boost, ref_index + 1, (long)ref_token_counts[ref_index]);
++                }
 +            }
 +
              auto runner_ctx  = get_context();
@@ -402,7 +431,7 @@ index b3947b7..6c22bfa 100644
              ggml_build_forward_expand(gf, out);
              return gf;
          }
-@@ -771,9 +841,11 @@ namespace Krea2 {
+@@ -771,9 +870,11 @@ namespace Krea2 {
                                    const sd::Tensor<float>& timesteps,
                                    const sd::Tensor<float>& context,
                                    const std::vector<sd::Tensor<float>>& ref_latents = {},
@@ -416,7 +445,7 @@ index b3947b7..6c22bfa 100644
              };
              return restore_trailing_singleton_dims(GGMLRunner::compute<float>(get_graph, n_threads, false, false, false), x.dim());
          }
-@@ -788,7 +860,9 @@ namespace Krea2 {
+@@ -788,7 +889,9 @@ namespace Krea2 {
                             *diffusion_params.timesteps,
                             tensor_or_empty(diffusion_params.context),
                             diffusion_params.ref_latents && diffusion_params.ref_image_params.pass_to_dit ? *diffusion_params.ref_latents : empty_ref_latents,
@@ -428,19 +457,21 @@ index b3947b7..6c22bfa 100644
      };
  }  // namespace Krea2
 diff --git a/src/model/diffusion/model.hpp b/src/model/diffusion/model.hpp
-index 070ca53..fe61218 100644
+index 070ca53..970888e 100644
 --- a/src/model/diffusion/model.hpp
 +++ b/src/model/diffusion/model.hpp
-@@ -27,6 +27,8 @@ struct RefImageParams {
+@@ -27,6 +27,10 @@ struct RefImageParams {
      int vlm_min_size                   = -1;
      int vlm_max_size                   = -1;
      bool resize_vae_to_target          = false;
-+    // Multiplies target->reference attention. 1.0 leaves attention untouched.
-+    float ref_boost                    = 1.0f;
++    // Per-reference multipliers on target->reference attention, in reference
++    // order. A single entry applies to every reference. Empty, or all 1.0,
++    // leaves attention untouched.
++    std::vector<float> ref_boosts      = {};
  };
  
  const std::unordered_map<std::string, RefImageParams> REF_IMAGE_PRESETS = {
-@@ -141,6 +143,8 @@ struct DiffusionParams {
+@@ -141,6 +145,8 @@ struct DiffusionParams {
      const sd::Tensor<float>* y                        = nullptr;
      const std::vector<sd::Tensor<float>>* ref_latents = nullptr;
      RefImageParams ref_image_params                   = {false, false, Rope::RefIndexMode::FIXED, false};
@@ -487,7 +518,7 @@ index 69bcaa1..5eeda8d 100644
                  tensor_storage.ne[0]  = tensor_storage.ne[1];
                  tensor_storage.ne[1]  = 1;
 diff --git a/src/stable-diffusion.cpp b/src/stable-diffusion.cpp
-index 7370f6a..9856810 100644
+index 7370f6a..8daebcc 100644
 --- a/src/stable-diffusion.cpp
 +++ b/src/stable-diffusion.cpp
 @@ -2516,6 +2516,7 @@ public:
@@ -662,36 +693,37 @@ index 7370f6a..9856810 100644
              if (is_skiplayer_step && slg_scale != 0.0f) {
                  LOG_DEBUG("Skipping layers at step %d\n", step);
                  if (!step_cache.is_step_skipped()) {
-@@ -3241,9 +3303,28 @@ public:
+@@ -3241,9 +3303,29 @@ public:
                  break;
              }
          }
++        // Repeated ref_boost keys give one multiplier per reference, in order.
++        // A single key applies to every reference.
 +        for (const auto& [key, value] : parse_key_value_args(ref_image_args, "reference image args")) {
 +            if (key != "ref_boost") {
 +                continue;
 +            }
-+            try {
-+                params.ref_boost = std::stof(value);
-+            } catch (const std::exception&) {
++            float boost = 1.0f;
++            if (!parse_strict_float(value, boost)) {
 +                LOG_WARN("ignoring invalid reference image arg 'ref_boost=%s'", value.c_str());
 +                continue;
 +            }
-+            if (params.ref_boost <= 0.f) {
++            if (boost <= 0.f) {
 +                LOG_WARN("ignoring non-positive ref_boost '%s'", value.c_str());
-+                params.ref_boost = 1.0f;
++                continue;
 +            }
-+            break;
++            params.ref_boosts.push_back(boost);
 +        }
          if (params.force_ref_timestep_zero && !sd_version_is_krea2(version)) {
              LOG_WARN("force_ref_timestep_zero is only supported by Krea2 architecture for now");
          }
-+        if (params.ref_boost != 1.0f && !sd_version_is_krea2(version)) {
++        if (!params.ref_boosts.empty() && !sd_version_is_krea2(version)) {
 +            LOG_WARN("ref_boost is only supported by Krea2 architecture for now");
 +        }
          return params;
      }
  };
-@@ -3669,6 +3750,12 @@ void sd_sample_params_init(sd_sample_params_t* sample_params) {
+@@ -3669,6 +3751,12 @@ void sd_sample_params_init(sd_sample_params_t* sample_params) {
      sample_params->custom_sigmas               = nullptr;
      sample_params->custom_sigmas_count         = 0;
      sample_params->flow_shift                  = INFINITY;
@@ -704,7 +736,7 @@ index 7370f6a..9856810 100644
      sample_params->extra_sample_args           = nullptr;
  }
  
-@@ -3686,6 +3773,11 @@ char* sd_sample_params_to_str(const sd_sample_params_t* sample_params) {
+@@ -3686,6 +3774,11 @@ char* sd_sample_params_to_str(const sd_sample_params_t* sample_params) {
               "slg.layer_start: %.2f, "
               "slg.layer_end: %.2f, "
               "slg.scale: %.2f, "
@@ -716,7 +748,7 @@ index 7370f6a..9856810 100644
               "scheduler: %s, "
               "sample_method: %s, "
               "sample_steps: %d, "
-@@ -3702,6 +3794,11 @@ char* sd_sample_params_to_str(const sd_sample_params_t* sample_params) {
+@@ -3702,6 +3795,11 @@ char* sd_sample_params_to_str(const sd_sample_params_t* sample_params) {
               sample_params->guidance.slg.layer_start,
               sample_params->guidance.slg.layer_end,
               sample_params->guidance.slg.scale,
@@ -728,7 +760,7 @@ index 7370f6a..9856810 100644
               sd_scheduler_name(sample_params->scheduler),
               sd_sample_method_name(sample_params->sample_method),
               sample_params->sample_steps,
-@@ -3721,7 +3818,7 @@ void sd_img_gen_params_init(sd_img_gen_params_t* sd_img_gen_params) {
+@@ -3721,7 +3819,7 @@ void sd_img_gen_params_init(sd_img_gen_params_t* sd_img_gen_params) {
      sd_img_gen_params->ref_image_args      = "";
      sd_img_gen_params->width               = 512;
      sd_img_gen_params->height              = 512;
@@ -737,7 +769,7 @@ index 7370f6a..9856810 100644
      sd_img_gen_params->seed                = -1;
      sd_img_gen_params->batch_count         = 1;
      sd_img_gen_params->control_strength    = 0.9f;
-@@ -5698,6 +5795,7 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
+@@ -5698,6 +5796,7 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
                                                     latents.control_image,
                                                     request.control_strength,
                                                     request.guidance,
@@ -745,7 +777,7 @@ index 7370f6a..9856810 100644
                                                     plan.eta,
                                                     request.shifted_timestep,
                                                     plan.sample_method,
-@@ -5819,6 +5917,7 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
+@@ -5819,6 +5918,7 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
                                                              latents.control_image,
                                                              request.control_strength,
                                                              request.guidance,
@@ -753,7 +785,7 @@ index 7370f6a..9856810 100644
                                                              plan.eta,
                                                              request.shifted_timestep,
                                                              plan.sample_method,
-@@ -6952,6 +7051,7 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
+@@ -6952,6 +7052,7 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
                                                             sd::Tensor<float>(),
                                                             0.f,
                                                             request.high_noise_guidance,
@@ -761,7 +793,7 @@ index 7370f6a..9856810 100644
                                                             plan.high_noise_eta,
                                                             request.shifted_timestep,
                                                             plan.high_noise_sample_method,
-@@ -6994,6 +7094,7 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
+@@ -6994,6 +7095,7 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
                                                          sd::Tensor<float>(),
                                                          0.f,
                                                          sd_vid_gen_params->sample_params.guidance,
@@ -769,7 +801,7 @@ index 7370f6a..9856810 100644
                                                          plan.eta,
                                                          sd_vid_gen_params->sample_params.shifted_timestep,
                                                          plan.sample_method,
-@@ -7132,6 +7233,7 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
+@@ -7132,6 +7234,7 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
                                              sd::Tensor<float>(),
                                              0.f,
                                              sd_vid_gen_params->sample_params.guidance,

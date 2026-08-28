@@ -57,6 +57,16 @@ button.danger{background:#49252a;border-color:#813942}
 .krea2edit-collapse-toggle{width:30px;margin-left:auto;padding:3px 7px;font-size:14px;line-height:1;background:#222b35;border-color:#465163}
 .krea2edit-settings{margin-top:10px;display:grid;gap:8px}
 .krea2edit-lora-reminder{margin:0;color:var(--muted);font-size:11px}
+.krea2edit-reference{display:flex;align-items:center;gap:10px;margin-top:8px;padding:8px;border:1px dashed #3e695e;border-radius:8px;background:#182522;transition:border-color .15s,background .15s}
+.krea2edit-reference.dragging{border-color:var(--accent);background:#20332f}
+.krea2edit-reference-copy{min-width:0;flex:1;display:grid;gap:3px}
+.krea2edit-reference-copy strong{color:var(--accent);font-size:12px}
+.krea2edit-reference-copy span{color:var(--muted);font-size:11px;overflow-wrap:anywhere}
+.krea2edit-reference-actions{display:flex;align-items:center;gap:6px;margin-top:4px}
+.krea2edit-reference-actions button{width:auto;padding:5px 9px;font-size:11px}
+.krea2edit-reference-boost{display:flex;align-items:center;gap:5px;color:var(--muted);font-size:11px}
+.krea2edit-reference-boost input{width:74px;margin:0}
+.krea2edit-add-reference{width:auto;margin-top:8px;padding:6px 10px;font-size:12px}
 #krea2EditPanel.collapsed .krea2edit-settings{display:none}
 .result-tabs{display:flex;gap:5px;padding-top:11px;border-bottom:1px solid var(--line)}
 .result-tab{width:auto;padding:7px 15px;border-radius:7px 7px 0 0;background:#151922;border-color:var(--line);border-bottom:0;color:var(--muted)}
@@ -247,25 +257,13 @@ button.danger{background:#49252a;border-color:#813942}
     <button id="krea2EditCollapseToggle" class="krea2edit-collapse-toggle" type="button"
             title="Hide Krea2 Edit settings" onclick="toggleKrea2EditPanelSettings()">^</button>
   </div>
-  <div id="krea2EditReferencePreview" class="selected-source-preview">
-    <div class="source-thumb-slot">
-      <img id="krea2EditReferenceThumb" alt="Selected Krea2 Edit reference" hidden>
-      <span id="krea2EditReferenceDropHint">Drag image here</span>
-    </div>
-    <div class="selected-source-copy">
-      <strong id="krea2EditReferenceStatus">No reference image selected</strong>
-      <span id="krea2EditReferenceName"></span>
-      <span id="krea2EditReferenceResolution"></span>
-      <button type="button" onclick="chooseKrea2EditReferenceImage()">Load reference image</button>
-      <input id="krea2EditReferenceFile" type="file" accept="image/png,image/jpeg,.png,.jpg,.jpeg" hidden>
-    </div>
-  </div>
+  <div id="krea2EditReferenceList"></div>
+  <button id="krea2EditAddReferenceButton" type="button" class="krea2edit-add-reference"
+          onclick="addKrea2EditReferencePanel()">+ Add reference image</button>
+  <input id="krea2EditReferenceFile" type="file" accept="image/png,image/jpeg,.png,.jpg,.jpeg" hidden>
   <div class="krea2edit-settings">
     <p class="krea2edit-lora-reminder">* the Krea2 Edit LoRA must be selected in the LoRAs list above to use this feature</p>
-    <div class="fields two">
-      <div><label for="ref_boost">Reference fidelity (ref_boost)</label><div class="combo" data-field="ref_boost"></div></div>
-      <div><label for="ref_boost_a">Scene fidelity (ref_boost_a)</label><div class="combo" data-field="ref_boost_a"></div></div>
-    </div>
+    <p class="krea2edit-lora-reminder">Reference order matters: scene first, subject second.</p>
     <div class="fields two">
       <div><label for="grounding_px">Grounding resolution (px)</label><div class="combo" data-field="grounding_px"></div></div>
       <div><label for="fit_mode">Reference fit mode</label><div class="combo" data-field="fit_mode"></div></div>
@@ -337,12 +335,10 @@ const COMBO_FIELDS = {
   vae_tile_size:   {value:'32',  step:1,    options:['32','64','68','128','256','512']},
   img2img_denoise: {value:'0', step:0.05, options:['0','0.15','0.35','0.5','0.65','0.75','0.9']},
   img2img_noise_add: {value:'0', step:0.05, options:['0','0.1','0.25','0.5','0.75','1']},
-  ref_boost:       {value:'4',   step:0.5,  options:['0.5','1','2','4','6','10']},
-  ref_boost_a:     {value:'1',   step:0.5,  options:['1','2','4']},
   grounding_px:    {value:'768', step:64,   options:['384','512','640','768']},
   fit_mode:        {value:'fit', options:['fit','crop']},
 };
-const NUMERIC_FIELDS = ['seed','steps','cfg','flow_shift','pag_scale','pag_start','pag_end','hires_steps','hires_denoise','vae_tile_size','img2img_denoise','img2img_noise_add','ref_boost','ref_boost_a','grounding_px','beta_schedule_alpha','beta_schedule_beta'];
+const NUMERIC_FIELDS = ['seed','steps','cfg','flow_shift','pag_scale','pag_start','pag_end','hires_steps','hires_denoise','vae_tile_size','img2img_denoise','img2img_noise_add','grounding_px','beta_schedule_alpha','beta_schedule_beta'];
 const TEXT_FIELDS = ['sampler','scheduler','hires_upscaler','extra_sample_args','pag_layers','fit_mode'];
 
 let openComboList = null;
@@ -507,57 +503,111 @@ $('sourceImageFile').addEventListener('change', event => uploadSourceImage(event
 attachImageDropZoneBehavior($('selectedSourcePreview'), uploadSourceImage);
 setSourceImage('');
 
-let selectedKrea2EditReferenceImage = '';
+const NEUTRAL_REFERENCE_FIDELITY = 1;
+let krea2EditReferencePanelBeingLoaded = null;
 
-async function setKrea2EditReferenceImage(name){
-  selectedKrea2EditReferenceImage = name || '';
-  const thumb = $('krea2EditReferenceThumb');
-  const dropHint = $('krea2EditReferenceDropHint');
-  if (!selectedKrea2EditReferenceImage) {
+function krea2EditReferencePanels(){
+  return Array.from(document.querySelectorAll('#krea2EditReferenceList .krea2edit-reference'));
+}
+
+function renumberKrea2EditReferencePanels(){
+  krea2EditReferencePanels().forEach((panel, index) => {
+    const role = index === 0 ? 'scene' : index === 1 ? 'subject' : `extra ${index - 1}`;
+    panel.querySelector('.krea2edit-reference-position').textContent = `Reference ${index + 1} (${role})`;
+  });
+}
+
+function addKrea2EditReferencePanel(filename = '', referenceFidelity = NEUTRAL_REFERENCE_FIDELITY){
+  const panel = document.createElement('div');
+  panel.className = 'krea2edit-reference';
+  panel.dataset.filename = filename;
+  panel.innerHTML =
+    `<div class="source-thumb-slot">` +
+      `<img alt="Krea2 Edit reference" hidden>` +
+      `<span>Drag image here</span>` +
+    `</div>` +
+    `<div class="krea2edit-reference-copy">` +
+      `<strong class="krea2edit-reference-position"></strong>` +
+      `<span class="krea2edit-reference-name"></span>` +
+      `<span class="krea2edit-reference-resolution"></span>` +
+      `<div class="krea2edit-reference-actions">` +
+        `<button type="button" class="krea2edit-reference-load">Load image</button>` +
+        `<label class="krea2edit-reference-boost">fidelity` +
+          `<input type="number" class="krea2edit-reference-boost-input" value="${referenceFidelity}" step="0.5" min="0">` +
+        `</label>` +
+        `<button type="button" class="krea2edit-reference-remove">Remove</button>` +
+      `</div>` +
+    `</div>`;
+  panel.querySelector('.krea2edit-reference-load').onclick = () => {
+    krea2EditReferencePanelBeingLoaded = panel;
+    $('krea2EditReferenceFile').click();
+  };
+  panel.querySelector('.krea2edit-reference-remove').onclick = () => {
+    panel.remove();
+    renumberKrea2EditReferencePanels();
+  };
+  attachImageDropZoneBehavior(panel, file => uploadKrea2EditReferenceImage(panel, file));
+  $('krea2EditReferenceList').appendChild(panel);
+  renumberKrea2EditReferencePanels();
+  setKrea2EditReferenceImage(panel, filename);
+  return panel;
+}
+
+async function setKrea2EditReferenceImage(panel, name){
+  panel.dataset.filename = name || '';
+  const thumb = panel.querySelector('.source-thumb-slot img');
+  const dropHint = panel.querySelector('.source-thumb-slot span');
+  const resolutionLabel = panel.querySelector('.krea2edit-reference-resolution');
+  panel.querySelector('.krea2edit-reference-name').textContent = name || '';
+  if (!name) {
     thumb.removeAttribute('src');
     thumb.hidden = true;
     dropHint.hidden = false;
-    $('krea2EditReferenceStatus').textContent = 'No reference image selected';
-    $('krea2EditReferenceName').textContent = '';
-    $('krea2EditReferenceResolution').textContent = 'Drag a PNG/JPEG here or load one from disk.';
+    resolutionLabel.textContent = 'Drag a PNG/JPEG here or load one from disk.';
     return;
   }
-  const selectedName = selectedKrea2EditReferenceImage;
   thumb.hidden = false;
   dropHint.hidden = true;
-  thumb.src = outputThumbUrl(selectedName);
-  $('krea2EditReferenceStatus').textContent = 'Reference image selected';
-  $('krea2EditReferenceName').textContent = selectedName;
-  $('krea2EditReferenceResolution').textContent = 'Reading resolution…';
+  thumb.src = outputThumbUrl(name);
+  resolutionLabel.textContent = 'Reading resolution…';
   try {
-    const cached = outputCache.get(selectedName);
-    const info = cached?.width && cached?.height ? cached : await api(`/api/output-info/${encodeURIComponent(selectedName)}`);
-    if (selectedKrea2EditReferenceImage === selectedName) {
-      $('krea2EditReferenceResolution').textContent = `${info.width}×${info.height}`;
-    }
+    const cached = outputCache.get(name);
+    const info = cached?.width && cached?.height ? cached : await api(`/api/output-info/${encodeURIComponent(name)}`);
+    if (panel.dataset.filename === name) resolutionLabel.textContent = `${info.width}×${info.height}`;
   } catch (e) {
-    if (selectedKrea2EditReferenceImage === selectedName) $('krea2EditReferenceResolution').textContent = 'Resolution unavailable';
+    if (panel.dataset.filename === name) resolutionLabel.textContent = 'Resolution unavailable';
   }
 }
 
-function chooseKrea2EditReferenceImage(){
-  $('krea2EditReferenceFile').click();
-}
-
-async function uploadKrea2EditReferenceImage(file){
+async function uploadKrea2EditReferenceImage(panel, file){
   if (!isSupportedSourceImageFile(file)) return;
-  $('krea2EditReferenceStatus').textContent = 'Uploading reference image…';
-  $('krea2EditReferenceResolution').textContent = file.name;
+  panel.querySelector('.krea2edit-reference-resolution').textContent = `Uploading ${file.name}…`;
   try {
     const uploaded = await uploadImageFileToSourceLibrary(file);
-    await setKrea2EditReferenceImage(uploaded.name);
+    await setKrea2EditReferenceImage(panel, uploaded.name);
     if ($('resultsTabOutput').classList.contains('active')) await loadAllOutputs(true);
   } catch (e) {
-    await setKrea2EditReferenceImage('');
+    await setKrea2EditReferenceImage(panel, '');
     alert(`Could not load reference image: ${e.message}`);
   } finally {
     $('krea2EditReferenceFile').value = '';
   }
+}
+
+function collectKrea2EditReferences(){
+  return krea2EditReferencePanels()
+    .map(panel => ({
+      filename: panel.dataset.filename || '',
+      ref_boost: Number(panel.querySelector('.krea2edit-reference-boost-input').value),
+    }))
+    .filter(reference => reference.filename);
+}
+
+function applyKrea2EditReferences(references){
+  $('krea2EditReferenceList').innerHTML = '';
+  (references || []).forEach(reference =>
+    addKrea2EditReferencePanel(reference.filename, reference.ref_boost ?? NEUTRAL_REFERENCE_FIDELITY));
+  if (!krea2EditReferencePanels().length) addKrea2EditReferencePanel();
 }
 
 function toggleKrea2EditPanelSettings(){
@@ -567,9 +617,12 @@ function toggleKrea2EditPanelSettings(){
   toggleButton.title = settingsAreHidden ? 'Show Krea2 Edit settings' : 'Hide Krea2 Edit settings';
 }
 
-$('krea2EditReferenceFile').addEventListener('change', event => uploadKrea2EditReferenceImage(event.target.files[0]));
-attachImageDropZoneBehavior($('krea2EditReferencePreview'), uploadKrea2EditReferenceImage);
-setKrea2EditReferenceImage('');
+$('krea2EditReferenceFile').addEventListener('change', event => {
+  if (krea2EditReferencePanelBeingLoaded) {
+    uploadKrea2EditReferenceImage(krea2EditReferencePanelBeingLoaded, event.target.files[0]);
+  }
+});
+addKrea2EditReferencePanel();
 
 function selectResultsTab(name){
   document.querySelectorAll('.result-tab').forEach(tab =>
@@ -645,7 +698,7 @@ function collectParams(){
     save_lowres: $('save_lowres').checked,
     source_image: selectedSourceImage,
     krea2_edit_enabled: $('krea2_edit_enabled').checked,
-    krea2_edit_reference_image: selectedKrea2EditReferenceImage,
+    krea2_edit_references: collectKrea2EditReferences(),
     extra_loras: collectSelectedLoras(),
     model_name: $('modelName').textContent.trim(),
     checkpoint: $('checkpointSelect').value,
@@ -785,7 +838,7 @@ function loadParamsIntoForm(p){
   });
   setSourceImage(p.source_image || '');
   $('krea2_edit_enabled').checked = !!p.krea2_edit_enabled;
-  setKrea2EditReferenceImage(p.krea2_edit_reference_image || '');
+  applyKrea2EditReferences(p.krea2_edit_references);
   window.scrollTo({top: 0, behavior: 'smooth'});
 }
 
