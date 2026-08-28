@@ -77,14 +77,19 @@ def _a1111_parameters(payload: dict[str, Any]) -> str:
     return text + "\n" + ", ".join(settings)
 
 
+BASE64_IMAGE_PAYLOAD_FIELDS = ("init_images", "extra_images", "mask_image", "control_image")
+
+
 def embed_generation_metadata(image_bytes: bytes, payload: dict[str, Any]) -> bytes:
     """Return PNG bytes with A1111 and ComfyUI-compatible text chunks."""
     metadata_payload = dict(payload)
     had_init_images = bool(metadata_payload.get("init_images"))
-    # The source filename is sufficient to reproduce a web img2img job. Keeping
-    # init_images would duplicate the complete base64 input image inside every
-    # output PNG and is not part of either common metadata convention.
-    metadata_payload.pop("init_images", None)
+    # Input filenames are recorded in ui_params and are sufficient to reproduce a
+    # job. Keeping these would duplicate every complete base64 input image inside
+    # the output PNG, which no common metadata convention expects and which grows
+    # the file past what image viewers will read.
+    for base64_image_field in BASE64_IMAGE_PAYLOAD_FIELDS:
+        metadata_payload.pop(base64_image_field, None)
     ui_params = dict(metadata_payload.get("ui_params", metadata_payload))
     source_image = str(ui_params.get("source_image", ""))
     generation_type = str(metadata_payload.get(

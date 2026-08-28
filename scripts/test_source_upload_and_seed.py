@@ -15,6 +15,7 @@ from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import krea_web  # noqa: E402
+from image_metadata import embed_generation_metadata  # noqa: E402
 
 
 def check(condition: bool, message: str) -> None:
@@ -106,6 +107,25 @@ def main() -> int:
                   and f"Seed: {actual_seed}" in a1111
                   and "Seed: -1" not in a1111,
                   "saved PNG embeds the concrete seed in JSON and A1111 metadata")
+
+            bulky_base64_image = "A" * 200_000
+            embedded_without_image_payloads = json.loads(Image.open(BytesIO(
+                embed_generation_metadata(
+                    png_bytes(),
+                    {"seed": 1, "prompt": "x",
+                     "init_images": [bulky_base64_image],
+                     "extra_images": [bulky_base64_image, bulky_base64_image],
+                     "ui_params": {"seed": 1}},
+                ))).info["prompt"])
+            check("extra_images" not in embedded_without_image_payloads
+                  and "init_images" not in embedded_without_image_payloads,
+                  "base64 reference and source images are kept out of PNG metadata")
+            check(len(embed_generation_metadata(
+                      png_bytes(),
+                      {"seed": 1, "prompt": "x",
+                       "extra_images": [bulky_base64_image, bulky_base64_image],
+                       "ui_params": {"seed": 1}})) < 100_000,
+                  "a PNG with large references stays small instead of embedding them")
         finally:
             krea_web.OUTPUT_DIR = original_output_dir
     return 0
