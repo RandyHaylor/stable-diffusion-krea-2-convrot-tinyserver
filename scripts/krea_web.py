@@ -26,8 +26,21 @@ from io import BytesIO
 from PIL import Image
 import uvicorn
 
+import wd14_tagging
+from hires_staging import hires_settings_vary_from_main, select_loras_for_stage
 from image_metadata import cached_civitai_hash, embed_generation_metadata
-from krea2_edit_request import krea2_edit_native_args_fields, krea2_edit_payload_fields
+from krea2_edit_request import (
+    build_vision_only_ref_image_args,
+    krea2_edit_native_args_fields,
+    krea2_edit_payload_fields,
+)
+from prompt_composition import (
+    compose_hires_prompt,
+    compose_prompt_with_tag_groups,
+    describe_missing_prompt,
+    hires_tag_source_needs_stage_one_image,
+    resolve_hires_tag_groups,
+)
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -119,6 +132,42 @@ def without_non_finite_floats(value):
     if isinstance(value, list):
         return [without_non_finite_floats(item) for item in value]
     return value
+
+
+def images_selected_for_tagging(p: dict) -> list[str]:
+    """Output filenames the user ticked for tagging, in the order they appear.
+
+    Krea2 Edit references and the img2img source are mutually exclusive in a
+    request, so only one of the two can contribute.
+    """
+    if p.get("krea2_edit_enabled"):
+        return [str(reference.get("filename", ""))
+                for reference in p.get("krea2_edit_references", [])
+                if reference.get("wd14_tag") and str(reference.get("filename", "")).strip()]
+    source_image = str(p.get("source_image", "")).strip()
+    if source_image and p.get("img2img_wd14_tag"):
+        return [source_image]
+    return []
+
+
+def tag_groups_for_images(image_names: list[str]) -> list[str]:
+    """One comma-separated tag string per image, skipping any that yield nothing.
+
+    A missing tagger model is reported once and treated as "no tags" rather than
+    failing the generation, since the user asked for an image, not for tagging.
+    """
+    tag_groups = []
+    for image_name in image_names:
+        try:
+            tags = wd14_tagging.tag_image_file(OUTPUT_DIR / Path(image_name).name)
+        except wd14_tagging.TaggerUnavailable as exc:
+            print(f"[web] WD14 tagging skipped: {exc}", flush=True)
+            return []
+        tag_group = wd14_tagging.format_danbooru_tags_for_prompt(tags)
+        if tag_group:
+            tag_groups.append(tag_group)
+            print(f"[web] WD14 tagged {image_name}: {tag_group}", flush=True)
+    return tag_groups
 
 
 def read_generation_metadata(image: Image.Image) -> tuple[dict, str, dict]:
@@ -344,25 +393,59 @@ class QueueManager:
         # restart for an explicitly selected job so its checkpoint is definitive.
         if checkpoint:
             self.switch_checkpoint(checkpoint)
+        hires_enabled = bool(p.get("hires"))
+        hires_tag_source = str(p.get("hires_wd14_tag_source", "none"))
+        reference_tag_groups = (tag_groups_for_images(images_selected_for_tagging(p))
+                                if p.get("main_append_wd14_tags") or hires_tag_source == "reference_images"
+                                else [])
+        main_tag_groups = reference_tag_groups if p.get("main_append_wd14_tags") else []
+
+        settings_vary = hires_settings_vary_from_main(
+            hires_enabled, p.get("extra_loras", []),
+            str(p.get("hires_prompt", "")), str(p.get("hires_negative_prompt", "")),
+            hires_tag_source)
+
+        # The first stage's result must exist as a file before the hires request can
+        # reference or tag it, and a varying hires stage renders from it directly.
+        wants_lowres_reference = bool(hires_enabled and p.get("hires_use_vision_on_lowres"))
+        wants_stage_one_tags = hires_enabled and hires_tag_source_needs_stage_one_image(hires_tag_source)
+        run_first_stage_separately = hires_enabled and (
+            bool(p.get("save_lowres")) or wants_lowres_reference or wants_stage_one_tags or settings_vary)
+
         outputs: list[str] = []
         lowres_reference_names: list[str] = []
-        # The hires pass can only be conditioned on the low-res result if that result
-        # exists as a file, so asking for it as a reference forces the low-res pass.
-        wants_lowres_reference = bool(p.get("hires") and p.get("hires_use_vision_on_lowres"))
-        if p.get("hires") and (p.get("save_lowres") or wants_lowres_reference):
-            lowres_outputs = self.run_single_backend_generation(p, hires=False, prefix=f"krea-web-lowres-{job['id']}")
+        stage_one_tag_groups: list[str] = []
+        first_stage_image_name = ""
+        if run_first_stage_separately:
+            lowres_outputs = self.run_single_backend_generation(
+                p, hires=False, prefix=f"krea-web-lowres-{job['id']}", tag_groups=main_tag_groups)
             outputs += lowres_outputs
+            first_stage_image_name = lowres_outputs[0] if lowres_outputs else ""
             if wants_lowres_reference:
                 lowres_reference_names = lowres_outputs[:1]
+            if wants_stage_one_tags and first_stage_image_name:
+                stage_one_tag_groups = tag_groups_for_images([first_stage_image_name])
             if job["cancel_requested"]:
                 return outputs
-        stage = "krea-web-highres" if p.get("hires") else "krea-web"
-        outputs += self.run_single_backend_generation(p, hires=bool(p.get("hires")), prefix=f"{stage}-{job['id']}",
-                                                      reference_image_names=lowres_reference_names)
+
+        stage = "krea-web-highres" if hires_enabled else "krea-web"
+        hires_tag_groups = resolve_hires_tag_groups(hires_tag_source, reference_tag_groups,
+                                                    stage_one_tag_groups)
+        outputs += self.run_single_backend_generation(
+            p,
+            hires=hires_enabled and not settings_vary,
+            prefix=f"{stage}-{job['id']}",
+            reference_image_names=lowres_reference_names,
+            tag_groups=hires_tag_groups if settings_vary else main_tag_groups,
+            lora_stage="hires" if settings_vary else "main",
+            upscale_from_image=first_stage_image_name if settings_vary else "")
         return outputs
 
     def run_single_backend_generation(self, p: dict, hires: bool, prefix: str,
-                                      reference_image_names: list[str] | None = None) -> list[str]:
+                                      reference_image_names: list[str] | None = None,
+                                      tag_groups: list[str] | None = None,
+                                      lora_stage: str = "main",
+                                      upscale_from_image: str = "") -> list[str]:
         try:
             pag_layers = list(dict.fromkeys(
                 int(layer.strip()) for layer in str(p.get("pag_layers", "")).split(",") if layer.strip()
@@ -399,22 +482,40 @@ class QueueManager:
                 "enabled": True, "upscaler": p.get("hires_upscaler", "Latent"),
                 "target_width": int(p["hires_width"]), "target_height": int(p["hires_height"]),
                 "steps": int(p["hires_steps"]), "denoising_strength": float(p["hires_denoise"]),
+                "noise_multiplier": float(p.get("hires_noise_multiplier", 1.0)),
             }
-        prompt = p["prompt"] + " <sd_cpp_extra_args>" + json.dumps(native, separators=(",", ":")) + "</sd_cpp_extra_args>"
+        # A hires stage running as its own request renders the upscale itself, so it
+        # takes the hires resolution and the hires prompt rather than the main ones.
+        renders_hires_upscale = bool(upscale_from_image)
+        if renders_hires_upscale:
+            prompt_text = compose_hires_prompt(p["prompt"], str(p.get("hires_prompt", "")),
+                                               str(p.get("hires_prompt_mode", "append")),
+                                               tag_groups or [])
+            negative_prompt_text = compose_hires_prompt(
+                str(p.get("negative_prompt", "")), str(p.get("hires_negative_prompt", "")),
+                str(p.get("hires_negative_prompt_mode", "append")), [])
+            width, height = int(p["hires_width"]), int(p["hires_height"])
+            steps = int(p["hires_steps"])
+        else:
+            prompt_text = compose_prompt_with_tag_groups(p["prompt"], tag_groups or [])
+            negative_prompt_text = str(p.get("negative_prompt", ""))
+            width, height = int(p["width"]), int(p["height"])
+            steps = int(p["steps"])
+
+        prompt = prompt_text + " <sd_cpp_extra_args>" + json.dumps(native, separators=(",", ":")) + "</sd_cpp_extra_args>"
         payload = {
-            "prompt": prompt, "negative_prompt": p.get("negative_prompt", ""),
-            "width": int(p["width"]), "height": int(p["height"]), "steps": int(p["steps"]),
+            "prompt": prompt, "negative_prompt": negative_prompt_text,
+            "width": width, "height": height, "steps": steps,
             "cfg_scale": float(p["cfg"]), "seed": int(p["seed"]), "batch_size": 1,
             "sampler_name": p["sampler"], "scheduler": p["scheduler"],
         }
         requested_loras = []
-        for extra_lora in p.get("extra_loras", []):
-            raw_name = str(extra_lora.get("filename", ""))
-            lora_path = (LORA_DIR / Path(raw_name).name).resolve()
+        for extra_lora in select_loras_for_stage(p.get("extra_loras", []), lora_stage):
+            lora_path = (LORA_DIR / Path(extra_lora["path"]).name).resolve()
             if lora_path.parent != LORA_DIR.resolve() or not lora_path.is_file():
-                raise RuntimeError(f"selected LoRA is not available in models/loras: {raw_name}")
+                raise RuntimeError(f"selected LoRA is not available in models/loras: {extra_lora['path']}")
             requested_loras.append({"path": lora_path.name,
-                                    "multiplier": float(extra_lora.get("strength", 1.0)),
+                                    "multiplier": extra_lora["multiplier"],
                                     "is_high_noise": False})
         if requested_loras:
             payload["lora"] = requested_loras
@@ -435,6 +536,14 @@ class QueueManager:
         krea2_edit_fields = krea2_edit_payload_fields(p, load_output_image_as_base64)
         source_name = "" if krea2_edit_fields else str(p.get("source_image", ""))
         payload.update(krea2_edit_fields)
+        if renders_hires_upscale:
+            # The first stage's result is the thing being upscaled, so it replaces
+            # whatever source the main stage used.
+            payload["init_images"] = [load_output_image_as_base64(upscale_from_image)]
+            payload["denoising_strength"] = float(p["hires_denoise"])
+            payload["extra_sample_args"] = "img2img_noise_add=0"
+            source_name = ""
+            endpoint = "/sdapi/v1/img2img"
         if source_name:
             source_image_base64 = load_output_image_as_base64(source_name)
             payload["init_images"] = [source_image_base64]
@@ -452,6 +561,13 @@ class QueueManager:
             endpoint = "/sdapi/v1/img2img"
         for reference_name in (reference_image_names or []):
             payload.setdefault("extra_images", []).append(load_output_image_as_base64(reference_name))
+        # Images attached only so the VLM can read them must not also become
+        # reference latents; edit mode is the one case where they should.
+        if payload.get("extra_images") and not krea2_edit_fields:
+            native["ref_image_args"] = build_vision_only_ref_image_args(
+                int(p.get("grounding_px", 0)))
+            payload["prompt"] = (prompt_text + " <sd_cpp_extra_args>"
+                                 + json.dumps(native, separators=(",", ":")) + "</sd_cpp_extra_args>")
         result = self.post_json_to_backend(endpoint, payload, timeout=7200)
         images = result.get("images", [])
         if not images:
@@ -625,8 +741,14 @@ def build_app(user: str, password: str, backend: str) -> FastAPI:
     async def add_job(request: Request, _: str = Depends(authenticate)):
         body = await request.json()
         params = body.get("params", {})
-        if not str(params.get("prompt", "")).strip():
-            raise HTTPException(400, "Prompt is required")
+        missing_prompt_reason = describe_missing_prompt(
+            str(params.get("prompt", "")),
+            bool(params.get("main_append_wd14_tags")),
+            bool(params.get("hires")),
+            str(params.get("hires_prompt", "")),
+            str(params.get("hires_prompt_mode", "append")))
+        if missing_prompt_reason:
+            raise HTTPException(400, missing_prompt_reason)
         checkpoint = str(params.get("checkpoint", ""))
         checkpoint_path = ROOT / "models" / "chkpt" / Path(checkpoint).name
         if checkpoint and checkpoint_path.is_file():

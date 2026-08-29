@@ -420,6 +420,11 @@ def main() -> int:
     check("the hires pass receives exactly one reference, the low-res result",
           len(hires_reference_requests[1].get("extra_images", [])) == 1,
           f"extra_images count={len(hires_reference_requests[1].get('extra_images', []))}")
+    hires_reference_native = json.loads(hires_reference_requests[1]["prompt"]
+                                        .split("<sd_cpp_extra_args>", 1)[1].split("</sd_cpp_extra_args>", 1)[0])
+    check("a vision reference is kept out of the diffusion transformer",
+          "pass_to_dit=false" in hires_reference_native.get("ref_image_args", ""),
+          f"ref_image_args={hires_reference_native.get('ref_image_args')!r}")
 
     plain_hires_params = build_job_params("hires-without-reference")
     plain_hires_params["hires"] = True
@@ -434,18 +439,100 @@ def main() -> int:
           len(plain_hires_requests) == 1 and "extra_images" not in plain_hires_requests[0],
           f"request count={len(plain_hires_requests)}")
 
+    varying_hires_params = build_job_params("hires-varying-settings")
+    varying_hires_params["hires"] = True
+    varying_hires_params["save_lowres"] = False
+    varying_hires_params["hires_prompt"] = "sharp focus"
+    varying_hires_params["hires_prompt_mode"] = "append"
+    client.post("/api/jobs", json={"params": varying_hires_params}, headers=session_headers)
+    wait_until(lambda: next((j for j in client.get("/api/state", headers=session_headers).json()["history"]
+                             if (j["params"] or {}).get("prompt") == "hires-varying-settings"
+                             and j["status"] == "completed"), None),
+               30, "hires-varying-settings job to complete")
+    varying_requests = find_all_generation_requests_for_prompt("hires-varying-settings")
+    check("a hires prompt override runs the stages as two requests",
+          len(varying_requests) == 2, f"request count={len(varying_requests)}")
+    first_stage_native = json.loads(varying_requests[0]["prompt"]
+                                    .split("<sd_cpp_extra_args>", 1)[1].split("</sd_cpp_extra_args>", 1)[0])
+    check("the first stage renders at base resolution with no hires block",
+          "hires" not in first_stage_native, f"native={sorted(first_stage_native)}")
+    second_stage_native = json.loads(varying_requests[1]["prompt"]
+                                     .split("<sd_cpp_extra_args>", 1)[1].split("</sd_cpp_extra_args>", 1)[0])
+    check("the second stage upscales from the first rather than running a native hires pass",
+          "hires" not in second_stage_native and "init_images" in varying_requests[1],
+          f"keys={sorted(varying_requests[1])}")
+    check("the second stage carries the hires prompt appended to the main prompt",
+          varying_requests[1]["prompt"].startswith("hires-varying-settings, sharp focus"),
+          f"prompt={varying_requests[1]['prompt'][:70]!r}")
+    check("the second stage renders at the hires resolution",
+          varying_requests[1]["width"] == varying_hires_params["hires_width"]
+          and varying_requests[1]["height"] == varying_hires_params["hires_height"],
+          f"{varying_requests[1]['width']}x{varying_requests[1]['height']}")
+
+    matching_hires_params = build_job_params("hires-matching-settings")
+    matching_hires_params["hires"] = True
+    matching_hires_params["save_lowres"] = False
+    client.post("/api/jobs", json={"params": matching_hires_params}, headers=session_headers)
+    wait_until(lambda: next((j for j in client.get("/api/state", headers=session_headers).json()["history"]
+                             if (j["params"] or {}).get("prompt") == "hires-matching-settings"
+                             and j["status"] == "completed"), None),
+               30, "hires-matching-settings job to complete")
+    matching_requests = find_all_generation_requests_for_prompt("hires-matching-settings")
+    matching_native = json.loads(matching_requests[0]["prompt"]
+                                 .split("<sd_cpp_extra_args>", 1)[1].split("</sd_cpp_extra_args>", 1)[0])
+    check("unvarying hires settings keep the native single-request path",
+          len(matching_requests) == 1 and matching_native.get("hires", {}).get("enabled") is True,
+          f"requests={len(matching_requests)}")
+    check("the hires block carries a noise multiplier, defaulting to 1",
+          matching_native["hires"].get("noise_multiplier") == 1.0,
+          f"hires={matching_native['hires']}")
+
+    noisy_hires_params = build_job_params("hires-noise-multiplier")
+    noisy_hires_params["hires"] = True
+    noisy_hires_params["save_lowres"] = False
+    noisy_hires_params["hires_noise_multiplier"] = 1.6
+    client.post("/api/jobs", json={"params": noisy_hires_params}, headers=session_headers)
+    wait_until(lambda: next((j for j in client.get("/api/state", headers=session_headers).json()["history"]
+                             if (j["params"] or {}).get("prompt") == "hires-noise-multiplier"
+                             and j["status"] == "completed"), None),
+               30, "hires-noise-multiplier job to complete")
+    noisy_requests = find_all_generation_requests_for_prompt("hires-noise-multiplier")
+    noisy_native = json.loads(noisy_requests[0]["prompt"]
+                              .split("<sd_cpp_extra_args>", 1)[1].split("</sd_cpp_extra_args>", 1)[0])
+    check("a noise multiplier above 1 reaches the runtime unclamped",
+          noisy_native["hires"].get("noise_multiplier") == 1.6,
+          f"noise_multiplier={noisy_native['hires'].get('noise_multiplier')}")
+    check("a noise multiplier does not by itself force a second request",
+          len(noisy_requests) == 1,
+          "noising the upscaled latent needs no weight reload")
+
+    check("a job with no prompt and no tagging is refused",
+          client.post("/api/jobs", json={"params": {**build_job_params(""), "prompt": ""}},
+                      headers=session_headers).status_code == 400)
+    check("a job with no prompt but tagging enabled is accepted",
+          client.post("/api/jobs",
+                      json={"params": {**build_job_params(""), "prompt": "",
+                                       "main_append_wd14_tags": True}},
+                      headers=session_headers).status_code == 200)
+    check("a hires replace mode with no hires prompt is refused",
+          client.post("/api/jobs",
+                      json={"params": {**build_job_params("replace-gate"), "hires": True,
+                                       "hires_prompt": "", "hires_prompt_mode": "replace"}},
+                      headers=session_headers).status_code == 400)
+
     served_page = client.get("/").text
 
     def input_tag_for_field(field_id: str) -> str:
         start = served_page.index(f'id="{field_id}"')
         return served_page[start:served_page.index(">", start)]
 
-    check("the login password field is declared as an existing password, not a new one",
-          'autocomplete="current-password"' in input_tag_for_field("loginPassword")
-          and "new-password" not in served_page,
-          "new-password makes browsers offer to generate and store a fresh credential")
-    check("the login username field is declared as a username",
-          'autocomplete="username"' in input_tag_for_field("loginUser"))
+    login_field_tags = [input_tag_for_field("loginUser"), input_tag_for_field("loginPassword")]
+    check("the login fields carry no credential signals, so password managers stay out",
+          all('autocomplete="off"' in tag and 'name=' not in tag for tag in login_field_tags)
+          and not any(signal in served_page
+                      for signal in ('type="password"', "current-password", "new-password",
+                                     'autocomplete="username"')),
+          "this is a throwaway code on an ephemeral tunnel; breach warnings are pure noise")
     unguarded_fields = [field_id for field_id in ("negative_prompt", "extra_sample_args", "pag_layers")
                         if 'autocomplete="off"' not in input_tag_for_field(field_id)]
     check("generation text fields opt out of autofill so browsers stop guessing them",

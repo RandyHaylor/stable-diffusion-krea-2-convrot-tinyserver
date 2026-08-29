@@ -65,7 +65,7 @@ def main() -> int:
     manager = object.__new__(krea_web.QueueManager)
     observed_seeds: list[int] = []
     manager.run_single_backend_generation = (
-        lambda params, hires, prefix, reference_image_names=None:
+        lambda params, hires, prefix, **_stage_options:
             observed_seeds.append(params["seed"]) or []
     )
     params = {"seed": -1, "checkpoint": "", "hires": False}

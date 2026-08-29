@@ -70,6 +70,8 @@ button.danger{background:#49252a;border-color:#813942}
 .krea2edit-reference-actions button{width:auto;padding:5px 9px;font-size:11px}
 .krea2edit-reference-boost{display:flex;align-items:center;gap:5px;color:var(--muted);font-size:11px}
 .krea2edit-reference-boost input{width:74px;margin:0}
+.krea2edit-reference-tag{display:flex;align-items:center;gap:4px;color:var(--muted);font-size:11px}
+.krea2edit-reference-tag input{width:auto;margin:0}
 .krea2edit-add-reference{width:auto;margin-top:8px;padding:6px 10px;font-size:12px}
 #krea2EditPanel.collapsed .krea2edit-settings{display:none}
 .result-tabs{display:flex;gap:5px;padding-top:11px;border-bottom:1px solid var(--line)}
@@ -96,6 +98,8 @@ button.danger{background:#49252a;border-color:#813942}
 .lorarow .loraname{flex:1;color:#edf1f7;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .lorarow .lorasize{font-size:11px;color:var(--muted);flex:none}
 .lorarow input[type=number]{width:74px;flex:none;padding:5px 6px}
+.lorarow .lorahires{display:flex;align-items:center;gap:4px;flex:none;color:var(--muted);font-size:11px}
+.hires-variation-notice{margin:8px 0;padding:7px 9px;border-radius:6px;background:#2a2410;border:1px solid #5c4a15;color:#e8cf86;font-size:12px}
 #loginGate{position:fixed;inset:0;z-index:100;background:var(--bg);display:flex;align-items:center;justify-content:center}
 #loginGate form{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:22px;width:320px}
 #loginGate h2{margin:0 0 12px;color:#edf1f7;font-size:18px}
@@ -140,9 +144,9 @@ button.danger{background:#49252a;border-color:#813942}
   <form id="loginForm">
     <h2>Krea Tinyserver</h2>
     <label for="loginUser">Username</label>
-    <input id="loginUser" name="username" value="krea" autocomplete="username">
+    <input id="loginUser" value="krea" autocomplete="off">
     <label for="loginPassword">Password</label>
-    <input id="loginPassword" name="password" type="password" autocomplete="current-password">
+    <input id="loginPassword" autocomplete="off">
     <div id="loginError"></div>
     <button type="submit" style="margin-top:10px">Log in</button>
   </form>
@@ -234,7 +238,8 @@ button.danger{background:#49252a;border-color:#813942}
   </div>
 
   <div class="checks">
-    <label><input id="hires" type="checkbox"> Hires pass</label>
+    <label title="Add the WD14 tags from every ticked image to the main prompt. With this on, a prompt is optional."><input id="main_append_wd14_tags" type="checkbox"> Append WD14 tags</label>
+    <label><input id="hires" type="checkbox" onchange="refreshHiresVariationNotice()"> Hires pass</label>
     <label><input id="save_lowres" type="checkbox"> Save low-res too</label>
     <label title="Runs the low-res pass first so the vision model can read it. Also adds the low-res image as a DiT reference, which costs VRAM at high hires targets."><input id="hires_use_vision_on_lowres" type="checkbox"> Use vision on low-res</label>
   </div>
@@ -242,10 +247,25 @@ button.danger{background:#49252a;border-color:#813942}
   <h2 style="margin-top:16px">LoRAs</h2>
   <div id="loraList" class="loralist">no LoRAs found in models/loras</div>
 
+  <div id="hiresVariationNotice" class="hires-variation-notice" hidden>Hires setting variation causing additional model load time</div>
+
   <div class="fields">
     <div><label for="hires_resolution">Hires resolution</label><div class="combo" data-field="hires_resolution"></div></div>
     <div><label for="hires_steps">Hires steps</label><div class="combo" data-field="hires_steps"></div></div>
     <div><label for="hires_denoise">Denoise</label><div class="combo" data-field="hires_denoise"></div></div>
+    <div><label for="hires_noise_multiplier">Hires noise multiplier</label><div class="combo" data-field="hires_noise_multiplier"></div></div>
+  </div>
+
+  <div class="fields">
+    <div><label for="hires_prompt">Hires prompt</label><input id="hires_prompt" value="" autocomplete="off" oninput="refreshHiresVariationNotice()"></div>
+    <div><label for="hires_prompt_mode">Hires prompt mode</label><div class="combo" data-field="hires_prompt_mode"></div></div>
+  </div>
+  <div class="fields">
+    <div><label for="hires_negative_prompt">Hires negative prompt</label><input id="hires_negative_prompt" value="" autocomplete="off" oninput="refreshHiresVariationNotice()"></div>
+    <div><label for="hires_negative_prompt_mode">Hires negative mode</label><div class="combo" data-field="hires_negative_prompt_mode"></div></div>
+  </div>
+  <div class="fields">
+    <div><label for="hires_wd14_tag_source">Hires WD14 tags</label><div class="combo" data-field="hires_wd14_tag_source"></div></div>
   </div>
 
   <div class="fields two">
@@ -291,6 +311,7 @@ button.danger{background:#49252a;border-color:#813942}
         <span id="selectedSourceResolution"></span>
         <button type="button" onclick="chooseSourceImage()">Load source image</button>
         <label class="source-choice-radio" title="Lets the vision model read the source image; Krea2 never shows it the init image on its own. Also adds the source as a DiT reference, which costs VRAM."><input id="img2img_use_vision_on_source" type="checkbox"> Use vision on source</label>
+        <label class="source-choice-radio" title="Run WD14 on the source image and add its danbooru tags to the prompt"><input id="img2img_wd14_tag" type="checkbox"> Tag source with WD14</label>
         <input id="sourceImageFile" type="file" accept="image/png,image/jpeg,.png,.jpg,.jpeg" hidden>
       </div>
     </div>
@@ -338,15 +359,20 @@ const COMBO_FIELDS = {
   hires_resolution:{value:'1536x1536', options:['1536x1536','1792x1792','1920x1920','2048x2048','1152x1680','1248x1824','1344x1960','1680x1152','1824x1248','1960x1344','1792x1344','1344x1792']},
   hires_steps:     {value:'3',   step:1,    options:['2','3','4','6']},
   hires_denoise:   {value:'0.5', step:0.05, options:['0.35','0.5','0.65']},
+  hires_noise_multiplier: {value:'1', step:0.05, options:['0.5','0.75','1','1.25','1.5','2']},
   hires_upscaler:  {value:'Latent', options:[]},
+  hires_prompt_mode:          {value:'append', options:['append','prepend','replace']},
+  hires_negative_prompt_mode: {value:'append', options:['append','prepend','replace']},
+  hires_wd14_tag_source:      {value:'none',   options:['none','reference_images','stage_one']},
   vae_tile_size:   {value:'32',  step:1,    options:['32','64','68','128','256','512']},
   img2img_denoise: {value:'0', step:0.05, options:['0','0.15','0.35','0.5','0.65','0.75','0.9']},
   img2img_noise_add: {value:'0', step:0.05, options:['0','0.1','0.25','0.5','0.75','1']},
   grounding_px:    {value:'768', step:64,   options:['384','512','640','768']},
   fit_mode:        {value:'fit', options:['fit','crop']},
 };
-const NUMERIC_FIELDS = ['seed','steps','cfg','flow_shift','pag_scale','pag_start','pag_end','hires_steps','hires_denoise','vae_tile_size','img2img_denoise','img2img_noise_add','grounding_px','beta_schedule_alpha','beta_schedule_beta'];
-const TEXT_FIELDS = ['sampler','scheduler','hires_upscaler','extra_sample_args','pag_layers','fit_mode'];
+const NUMERIC_FIELDS = ['seed','steps','cfg','flow_shift','pag_scale','pag_start','pag_end','hires_steps','hires_denoise','vae_tile_size','img2img_denoise','img2img_noise_add','grounding_px','beta_schedule_alpha','beta_schedule_beta','hires_noise_multiplier'];
+const TEXT_FIELDS = ['sampler','scheduler','hires_upscaler','extra_sample_args','pag_layers','fit_mode',
+  'hires_prompt','hires_prompt_mode','hires_negative_prompt','hires_negative_prompt_mode','hires_wd14_tag_source'];
 
 let openComboList = null;
 
@@ -525,7 +551,8 @@ function renumberKrea2EditReferencePanels(){
   });
 }
 
-function addKrea2EditReferencePanel(filename = '', referenceFidelity = RECOMMENDED_REFERENCE_FIDELITY){
+function addKrea2EditReferencePanel(filename = '', referenceFidelity = RECOMMENDED_REFERENCE_FIDELITY,
+                                    tagWithWd14 = false){
   const panel = document.createElement('div');
   panel.className = 'krea2edit-reference';
   panel.dataset.filename = filename;
@@ -543,9 +570,11 @@ function addKrea2EditReferencePanel(filename = '', referenceFidelity = RECOMMEND
         `<label class="krea2edit-reference-boost">fidelity` +
           `<input type="number" class="krea2edit-reference-boost-input" value="${referenceFidelity}" step="0.5" min="0" autocomplete="off">` +
         `</label>` +
+        `<label class="krea2edit-reference-tag" title="Run WD14 on this reference and add its danbooru tags to the prompt"><input type="checkbox" class="krea2edit-reference-tag-input"> tag</label>` +
         `<button type="button" class="krea2edit-reference-remove">Remove</button>` +
       `</div>` +
     `</div>`;
+  panel.querySelector('.krea2edit-reference-tag-input').checked = !!tagWithWd14;
   panel.querySelector('.krea2edit-reference-load').onclick = () => {
     krea2EditReferencePanelBeingLoaded = panel;
     $('krea2EditReferenceFile').click();
@@ -620,6 +649,7 @@ function collectKrea2EditReferences(){
     .map(panel => ({
       filename: panel.dataset.filename || '',
       ref_boost: Number(panel.querySelector('.krea2edit-reference-boost-input').value),
+      wd14_tag: panel.querySelector('.krea2edit-reference-tag-input').checked,
     }))
     .filter(reference => reference.filename);
 }
@@ -627,7 +657,8 @@ function collectKrea2EditReferences(){
 function applyKrea2EditReferences(references){
   $('krea2EditReferenceList').innerHTML = '';
   (references || []).forEach(reference =>
-    addKrea2EditReferencePanel(reference.filename, reference.ref_boost ?? RECOMMENDED_REFERENCE_FIDELITY));
+    addKrea2EditReferencePanel(reference.filename, reference.ref_boost ?? RECOMMENDED_REFERENCE_FIDELITY,
+                               reference.wd14_tag));
   if (!krea2EditReferencePanels().length) addKrea2EditReferencePanel();
 }
 
@@ -688,12 +719,14 @@ function renderLoraList(loras){
   if (!loras.length) { $('loraList').textContent = 'no LoRAs found in models/loras'; return; }
   $('loraList').innerHTML = loras.map((lora, index) =>
     `<div class="lorarow">` +
-      `<input type="checkbox" id="loraEnabled${index}" data-filename="${escapeHtml(lora.filename)}">` +
+      `<input type="checkbox" id="loraEnabled${index}" data-filename="${escapeHtml(lora.filename)}" onchange="refreshHiresVariationNotice()">` +
       `<span class="loraname" title="${escapeHtml(lora.filename)}">${escapeHtml(lora.name)}</span>` +
       `<span class="lorasize">${lora.size_mb} MB</span>` +
       `<input type="number" id="loraStrength${index}" value="1" step="0.05" autocomplete="off">` +
+      `<label class="lorahires" title="Use this LoRA in the hires pass too. A hires selection that differs from the main one reloads weights."><input type="checkbox" id="loraHires${index}" checked onchange="refreshHiresVariationNotice()"> hires</label>` +
     `</div>`
   ).join('');
+  refreshHiresVariationNotice();
 }
 
 function collectSelectedLoras(){
@@ -701,10 +734,25 @@ function collectSelectedLoras(){
     .map(row => ({
       filename: row.querySelector('input[type=checkbox]').dataset.filename,
       strength: Number(row.querySelector('input[type=number]').value),
+      use_in_hires: row.querySelector('.lorahires input[type=checkbox]').checked,
       checked: row.querySelector('input[type=checkbox]').checked,
     }))
     .filter(entry => entry.checked)
-    .map(({filename, strength}) => ({filename, strength}));
+    .map(({filename, strength, use_in_hires}) => ({filename, strength, use_in_hires}));
+}
+
+function hiresSettingsVaryFromMain(){
+  if (!$('hires').checked) return false;
+  const loraSelectionDiffers = collectSelectedLoras().some(lora => !lora.use_in_hires);
+  return loraSelectionDiffers
+    || $('hires_prompt').value.trim() !== ''
+    || $('hires_negative_prompt').value.trim() !== ''
+    || $('hires_wd14_tag_source').value !== 'none';
+}
+
+function refreshHiresVariationNotice(){
+  const notice = $('hiresVariationNotice');
+  if (notice) notice.hidden = !hiresSettingsVaryFromMain();
 }
 
 function collectParams(){
@@ -720,6 +768,8 @@ function collectParams(){
     hires_use_vision_on_lowres: $('hires_use_vision_on_lowres').checked,
     source_image: selectedSourceImage,
     img2img_use_vision_on_source: $('img2img_use_vision_on_source').checked,
+    img2img_wd14_tag: $('img2img_wd14_tag').checked,
+    main_append_wd14_tags: $('main_append_wd14_tags').checked,
     krea2_edit_enabled: $('krea2_edit_enabled').checked,
     krea2_edit_references: collectKrea2EditReferences(),
     extra_loras: collectSelectedLoras(),
@@ -731,8 +781,19 @@ function collectParams(){
   return params;
 }
 
+function describeMissingPrompt(){
+  if (!$('prompt').value.trim() && !$('main_append_wd14_tags').checked) {
+    return 'Prompt is required, or enable WD14 tagging to build one from the images';
+  }
+  if ($('hires').checked && $('hires_prompt_mode').value === 'replace' && !$('hires_prompt').value.trim()) {
+    return 'Hires prompt is required when the hires mode replaces the main prompt';
+  }
+  return '';
+}
+
 async function enqueue(front){
-  if (!$('prompt').value.trim()) return alert('Prompt is required');
+  const missingPrompt = describeMissingPrompt();
+  if (missingPrompt) return alert(missingPrompt);
   await post('/api/jobs', {params: collectParams(), front});
 }
 
@@ -774,8 +835,16 @@ function formatJobDetails(params){
     ['Hires resolution', p.hires ? `${p.hires_width || ''}×${p.hires_height || ''}` : ''],
     ['Hires steps', p.hires ? (p.hires_steps ?? '') : ''],
     ['Denoise', p.hires ? (p.hires_denoise ?? '') : ''],
+    ['Hires noise multiplier', p.hires ? (p.hires_noise_multiplier ?? '') : ''],
     ['Save low-res', p.save_lowres ? 'Yes' : 'No'],
     ['Hires vision on low-res', p.hires && p.hires_use_vision_on_lowres ? 'On' : ''],
+    ['Main WD14 tags', p.main_append_wd14_tags ? 'On' : ''],
+    ['Hires prompt', p.hires ? (p.hires_prompt || '') : ''],
+    ['Hires prompt mode', p.hires && p.hires_prompt ? (p.hires_prompt_mode || '') : ''],
+    ['Hires negative prompt', p.hires ? (p.hires_negative_prompt || '') : ''],
+    ['Hires negative mode', p.hires && p.hires_negative_prompt ? (p.hires_negative_prompt_mode || '') : ''],
+    ['Hires WD14 tags', p.hires && p.hires_wd14_tag_source && p.hires_wd14_tag_source !== 'none'
+      ? p.hires_wd14_tag_source : ''],
     ['VAE tile', p.vae_tile_size ?? ''],
   ];
   return details
@@ -849,7 +918,7 @@ function loadParamsIntoForm(p){
   ['prompt','negative_prompt'].forEach(id => { if ($(id)) $(id).value = p[id] || ''; });
   $('extra_sample_args').value = p.extra_sample_args || p.krea_extra_sample_args || '';
   ['resolution','seed','steps','cfg','sampler','scheduler','flow_shift','beta_schedule_alpha','beta_schedule_beta','pag_scale','pag_start','pag_end','pag_layers','hires_resolution',
-   'hires_steps','hires_denoise','hires_upscaler','vae_tile_size','img2img_denoise','img2img_noise_add'].forEach(id => {
+   'hires_steps','hires_denoise','hires_noise_multiplier','hires_upscaler','vae_tile_size','img2img_denoise','img2img_noise_add'].forEach(id => {
     if ($(id) && p[id] !== undefined) $(id).value = p[id];
   });
   $('hires').checked = !!p.hires;
@@ -867,6 +936,9 @@ function loadParamsIntoForm(p){
   });
   setSourceImage(p.source_image || '');
   $('img2img_use_vision_on_source').checked = !!p.img2img_use_vision_on_source;
+  $('img2img_wd14_tag').checked = !!p.img2img_wd14_tag;
+  $('main_append_wd14_tags').checked = !!p.main_append_wd14_tags;
+  refreshHiresVariationNotice();
   $('krea2_edit_enabled').checked = !!p.krea2_edit_enabled;
   applyKrea2EditReferences(p.krea2_edit_references);
   window.scrollTo({top: 0, behavior: 'smooth'});

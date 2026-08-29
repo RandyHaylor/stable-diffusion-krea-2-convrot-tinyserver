@@ -91,6 +91,21 @@ def build_krea2_edit_ref_image_args(params: dict) -> str:
     return ",".join(arguments)
 
 
+def build_vision_only_ref_image_args(grounding_pixels: int) -> str:
+    """Reference args for an image attached solely so the VLM can read it.
+
+    `extra_images` is the only request field that reaches the VLM, and the
+    runtime otherwise VAE-encodes every entry into reference latents that the
+    DiT attends to. Those latents cost sequence length in every sampling pass,
+    including hires, which is not what attaching an image for its description is
+    asking for; pass_to_dit=false leaves the diffusion transformer untouched.
+    """
+    arguments = [f"preset={REF_IMAGE_PRESET_NAME}", "pass_to_dit=false"]
+    if grounding_pixels > 0:
+        arguments.append(f"vlm_size={grounding_pixels}")
+    return ",".join(arguments)
+
+
 def krea2_edit_payload_fields(
     params: dict,
     load_reference_image_base64: Callable[[str], str],

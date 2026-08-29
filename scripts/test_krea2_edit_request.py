@@ -11,6 +11,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from krea2_edit_request import (  # noqa: E402
+    build_vision_only_ref_image_args,
     build_krea2_edit_ref_image_args,
     is_krea2_edit_enabled,
     krea2_edit_native_args_fields,
@@ -148,6 +149,19 @@ def main() -> int:
           == {"ref_image_args": "preset=krea2_edit,vlm_size=768,fit_mode=crop"}
           and "fit_mode" not in krea2_edit_payload_fields(crop_mode, fake_reference_image_loader),
           f"got {krea2_edit_native_args_fields(crop_mode)}")
+
+    check("a vision-only reference is kept out of the diffusion transformer",
+          "pass_to_dit=false" in build_vision_only_ref_image_args(768),
+          "these images exist to be read by the VLM, not to be attended to as latents")
+    check("a vision-only reference still selects the krea2_edit preset",
+          build_vision_only_ref_image_args(768)
+          == "preset=krea2_edit,pass_to_dit=false,vlm_size=768",
+          f"got {build_vision_only_ref_image_args(768)!r}")
+    check("a non-positive grounding size omits the vlm size from vision-only args",
+          build_vision_only_ref_image_args(0) == "preset=krea2_edit,pass_to_dit=false")
+    check("krea2 edit references are never marked as vision-only",
+          "pass_to_dit" not in build_krea2_edit_ref_image_args(enabled_params()),
+          "edit references belong in the DiT; that is what edit mode is")
 
     check("no payload fields are produced when edit mode is off",
           krea2_edit_payload_fields({}, fake_reference_image_loader) == {})
