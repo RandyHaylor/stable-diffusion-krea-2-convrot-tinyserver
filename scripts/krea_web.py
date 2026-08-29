@@ -39,6 +39,7 @@ from prompt_composition import (
     compose_prompt_with_tag_groups,
     describe_missing_prompt,
     hires_tag_source_needs_stage_one_image,
+    reference_tags_are_consumed,
     resolve_hires_tag_groups,
 )
 
@@ -199,7 +200,8 @@ def read_generation_metadata(image: Image.Image) -> tuple[dict, str, dict]:
             "denoising_strength": metadata.get(
                 "img2img_denoise", custom_img2img.get("denoising_strength", 0.0)
             ),
-            "noise_add": metadata.get("img2img_noise_add", custom_img2img.get("noise_add", 0.0)),
+            "noise_multiplier": metadata.get("img2img_noise_multiplier",
+                                             custom_img2img.get("noise_multiplier", 1.0)),
         }
     metadata["generation_type"] = generation_type
     return (without_non_finite_floats(metadata), generation_type,
@@ -253,6 +255,42 @@ def extra_sample_args_including_scheduler_settings(p: dict) -> str:
     beta_schedule_args = (f"alpha={float(p.get('beta_schedule_alpha', 0.5)):g}"
                           f",beta={float(p.get('beta_schedule_beta', 0.7)):g}")
     return f"{user_supplied_args},{beta_schedule_args}" if user_supplied_args else beta_schedule_args
+
+
+def hires_reference_encode_size(p: dict) -> int:
+    """Edge length the hires stage encodes Krea2 Edit references at, 0 for auto.
+
+    Anything but auto has to run the hires stage as its own request, since one
+    request carries a single ref_image_args for both stages.
+    """
+    try:
+        return max(0, int(p.get("hires_reference_encode_size", 0) or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def img2img_noise_multiplier_sample_arg(p: dict,
+                                        renders_hires_upscale: bool,
+                                        has_img2img_source: bool) -> str:
+    """The sample arg scaling the noise added to an img2img start latent.
+
+    The denoising strength already picks the schedule's starting sigma; this
+    multiplies the noise applied at that sigma, so 0 leaves the encoded source
+    untouched and values above 1 push past the schedule's own starting point.
+    A hires stage running as its own request is upscaling an already-denoised
+    image, so it keeps that latent as it is.
+    """
+    if renders_hires_upscale:
+        return "img2img_noise_multiplier=0"
+    if not has_img2img_source:
+        return ""
+    multiplier = max(0.0, float(p.get("img2img_noise_multiplier", 1.0)))
+    return f"img2img_noise_multiplier={multiplier:g}"
+
+
+def join_sample_args(*sample_args: str) -> str:
+    """Comma-join the sample arg fragments that are actually present."""
+    return ",".join(fragment for fragment in sample_args if fragment)
 
 
 class SessionTokenStore:
@@ -396,21 +434,27 @@ class QueueManager:
         hires_enabled = bool(p.get("hires"))
         hires_tag_source = str(p.get("hires_wd14_tag_source", "none"))
         reference_tag_groups = (tag_groups_for_images(images_selected_for_tagging(p))
-                                if p.get("main_append_wd14_tags") or hires_tag_source == "reference_images"
+                                if reference_tags_are_consumed(bool(p.get("main_append_wd14_tags")),
+                                                               hires_enabled, hires_tag_source)
                                 else [])
         main_tag_groups = reference_tag_groups if p.get("main_append_wd14_tags") else []
 
         settings_vary = hires_settings_vary_from_main(
             hires_enabled, p.get("extra_loras", []),
             str(p.get("hires_prompt", "")), str(p.get("hires_negative_prompt", "")),
-            hires_tag_source)
+            hires_tag_source, hires_reference_encode_size(p))
 
         # The first stage's result must exist as a file before the hires request can
         # reference or tag it, and a varying hires stage renders from it directly.
         wants_lowres_reference = bool(hires_enabled and p.get("hires_use_vision_on_lowres"))
         wants_stage_one_tags = hires_enabled and hires_tag_source_needs_stage_one_image(hires_tag_source)
+        # Saving the low-res image does not need its own render: the runtime decodes
+        # the pre-upscale latent it already holds. Only a stage that has to read that
+        # image back as a file before the next request is built forces a split.
         run_first_stage_separately = hires_enabled and (
-            bool(p.get("save_lowres")) or wants_lowres_reference or wants_stage_one_tags or settings_vary)
+            wants_lowres_reference or wants_stage_one_tags or settings_vary)
+        returns_lowres_image = bool(
+            hires_enabled and p.get("save_lowres") and not run_first_stage_separately)
 
         outputs: list[str] = []
         lowres_reference_names: list[str] = []
@@ -438,14 +482,19 @@ class QueueManager:
             reference_image_names=lowres_reference_names,
             tag_groups=hires_tag_groups if settings_vary else main_tag_groups,
             lora_stage="hires" if settings_vary else "main",
-            upscale_from_image=first_stage_image_name if settings_vary else "")
+            upscale_from_image=first_stage_image_name if settings_vary else "",
+            lowres_prefix=f"krea-web-lowres-{job['id']}" if returns_lowres_image else "")
         return outputs
 
     def run_single_backend_generation(self, p: dict, hires: bool, prefix: str,
                                       reference_image_names: list[str] | None = None,
                                       tag_groups: list[str] | None = None,
                                       lora_stage: str = "main",
-                                      upscale_from_image: str = "") -> list[str]:
+                                      upscale_from_image: str = "",
+                                      lowres_prefix: str = "") -> list[str]:
+        # The job params are what both the output panel and the saved PNG report, so
+        # the tags this request actually used are recorded there before it is sent.
+        p["wd14_tags"] = list(tag_groups or [])
         try:
             pag_layers = list(dict.fromkeys(
                 int(layer.strip()) for layer in str(p.get("pag_layers", "")).split(",") if layer.strip()
@@ -458,10 +507,17 @@ class QueueManager:
         pag_end = float(p.get("pag_end", 1.0))
         if not 0.0 <= pag_start <= pag_end <= 1.0:
             raise RuntimeError("PAG start/end must satisfy 0 <= start <= end <= 1")
+        # A hires stage running as its own request renders the upscale itself, so it
+        # takes the hires resolution and the hires prompt rather than the main ones.
+        renders_hires_upscale = bool(upscale_from_image)
+        krea2_edit_fields = krea2_edit_payload_fields(p, load_output_image_as_base64)
+        source_name = "" if (krea2_edit_fields or renders_hires_upscale) else str(p.get("source_image", ""))
         sample = {
             "sample_method": p["sampler"], "scheduler": p["scheduler"],
             "sample_steps": int(p["steps"]), "flow_shift": float(p["flow_shift"]),
-            "extra_sample_args": extra_sample_args_including_scheduler_settings(p),
+            "extra_sample_args": join_sample_args(
+                extra_sample_args_including_scheduler_settings(p),
+                img2img_noise_multiplier_sample_arg(p, renders_hires_upscale, bool(source_name))),
             "guidance": {"txt_cfg": float(p["cfg"])},
             "pag": {
                 "enabled": bool(p.get("pag_enabled", False)),
@@ -475,7 +531,8 @@ class QueueManager:
             "sample_params": sample,
             "vae_tiling_params": {"enabled": True, "tile_size_x": int(p["vae_tile_size"]),
                                   "tile_size_y": int(p["vae_tile_size"]), "target_overlap": 0.5},
-            **krea2_edit_native_args_fields(p),
+            **krea2_edit_native_args_fields(
+                p, hires_reference_encode_size(p) if renders_hires_upscale else 0),
         }
         if hires:
             native["hires"] = {
@@ -483,10 +540,8 @@ class QueueManager:
                 "target_width": int(p["hires_width"]), "target_height": int(p["hires_height"]),
                 "steps": int(p["hires_steps"]), "denoising_strength": float(p["hires_denoise"]),
                 "noise_multiplier": float(p.get("hires_noise_multiplier", 1.0)),
+                "return_lowres_image": bool(lowres_prefix),
             }
-        # A hires stage running as its own request renders the upscale itself, so it
-        # takes the hires resolution and the hires prompt rather than the main ones.
-        renders_hires_upscale = bool(upscale_from_image)
         if renders_hires_upscale:
             prompt_text = compose_hires_prompt(p["prompt"], str(p.get("hires_prompt", "")),
                                                str(p.get("hires_prompt_mode", "append")),
@@ -533,16 +588,12 @@ class QueueManager:
             if (ROOT / "models" / "loras" / item["path"]).is_file()
         ]
         endpoint = "/sdapi/v1/txt2img"
-        krea2_edit_fields = krea2_edit_payload_fields(p, load_output_image_as_base64)
-        source_name = "" if krea2_edit_fields else str(p.get("source_image", ""))
         payload.update(krea2_edit_fields)
         if renders_hires_upscale:
             # The first stage's result is the thing being upscaled, so it replaces
             # whatever source the main stage used.
             payload["init_images"] = [load_output_image_as_base64(upscale_from_image)]
             payload["denoising_strength"] = float(p["hires_denoise"])
-            payload["extra_sample_args"] = "img2img_noise_add=0"
-            source_name = ""
             endpoint = "/sdapi/v1/img2img"
         if source_name:
             source_image_base64 = load_output_image_as_base64(source_name)
@@ -553,11 +604,6 @@ class QueueManager:
             if p.get("img2img_use_vision_on_source"):
                 payload.setdefault("extra_images", []).append(source_image_base64)
             payload["denoising_strength"] = float(p.get("img2img_denoise", 0.0))
-            noise_add = max(0.0, min(1.0, float(p.get("img2img_noise_add", 0.0))))
-            extra_args = str(payload.get("extra_sample_args", "")).strip()
-            if extra_args:
-                extra_args += ","
-            payload["extra_sample_args"] = f"{extra_args}img2img_noise_add={noise_add:g}"
             endpoint = "/sdapi/v1/img2img"
         for reference_name in (reference_image_names or []):
             payload.setdefault("extra_images", []).append(load_output_image_as_base64(reference_name))
@@ -578,10 +624,14 @@ class QueueManager:
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         names = []
+        # The runtime returns the pre-upscale images first when it was asked for them,
+        # so the leading entries are the low-res pass and the rest are the hires one.
+        lowres_image_count = 1 if lowres_prefix and len(images) > 1 else 0
         for i, encoded in enumerate(images):
             if encoded.startswith("data:"):
                 encoded = encoded.split(",", 1)[1]
-            name = f"{prefix}-{stamp}-{i}.png"
+            stage_prefix = lowres_prefix if i < lowres_image_count else prefix
+            name = f"{stage_prefix}-{stamp}-{i}.png"
             image_bytes = base64.b64decode(encoded)
             metadata_payload = dict(payload)
             metadata_payload["seed"] = actual_seeds[i]
@@ -613,6 +663,17 @@ class QueueManager:
         print(f"Checkpoint ready: {checkpoint.name}; LoRA cache: {len(backend_loras)} files", flush=True)
         self.loaded_checkpoint = checkpoint.name
         return checkpoint.name
+
+    def unload_models_from_vram(self) -> None:
+        """Stop the model server so the GPU gets its memory back.
+
+        The next queued job restarts it, since a job always switches to its own
+        checkpoint first. Forgetting the loaded checkpoint is what makes that
+        switch actually reload rather than assume the weights are still there.
+        """
+        print("Unloading models: stopping the Krea server", flush=True)
+        subprocess.run([str(ROOT / "krea-server.sh"), "stop"], check=True, timeout=45)
+        self.loaded_checkpoint = ""
 
     def wait_for_backend_after_switch(self, checkpoint_name: str, attempts: int = 120) -> dict:
         """Wait for the replacement process and initialize its model-file caches.
@@ -663,6 +724,7 @@ class QueueManager:
 def build_app(user: str, password: str, backend: str) -> FastAPI:
     app = FastAPI(title="Krea Tinyserver Web")
     manager = QueueManager(backend)
+    app.state.queue_manager = manager
     session_tokens = SessionTokenStore()
 
     def session_token_from_request(request: Request) -> str | None:
@@ -732,6 +794,16 @@ def build_app(user: str, password: str, backend: str) -> FastAPI:
         except (RuntimeError, ValueError, subprocess.SubprocessError) as exc:
             raise HTTPException(409, str(exc)) from exc
         return {"model": selected}
+
+    @app.post("/api/unload-models")
+    def unload_models(_: str = Depends(authenticate)):
+        if manager.current:
+            raise HTTPException(409, "A generation is running; cancel it before unloading")
+        try:
+            manager.unload_models_from_vram()
+        except (RuntimeError, subprocess.SubprocessError) as exc:
+            raise HTTPException(409, str(exc)) from exc
+        return {"model": manager.loaded_checkpoint}
 
     @app.get("/api/state")
     def state(_: str = Depends(authenticate)):

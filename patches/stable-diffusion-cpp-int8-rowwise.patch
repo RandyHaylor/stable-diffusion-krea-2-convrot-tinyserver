@@ -1,5 +1,5 @@
 diff --git a/examples/common/common.cpp b/examples/common/common.cpp
-index 3581215..957d185 100644
+index 3581215..d2706cb 100644
 --- a/examples/common/common.cpp
 +++ b/examples/common/common.cpp
 @@ -1954,6 +1954,7 @@ bool SDGenerationParams::from_json_str(
@@ -10,17 +10,20 @@ index 3581215..957d185 100644
      load_if_exists("embed_image_metadata", embed_image_metadata);
  
      if (j.contains("hires") && j["hires"].is_object()) {
-@@ -1979,6 +1980,9 @@ bool SDGenerationParams::from_json_str(
+@@ -1979,6 +1980,12 @@ bool SDGenerationParams::from_json_str(
          if (hires_json.contains("denoising_strength") && hires_json["denoising_strength"].is_number()) {
              hires_denoising_strength = hires_json["denoising_strength"];
          }
 +        if (hires_json.contains("noise_multiplier")) {
 +            hires_noise_multiplier = hires_json["noise_multiplier"];
 +        }
++        if (hires_json.contains("return_lowres_image")) {
++            hires_return_lowres_image = hires_json["return_lowres_image"];
++        }
          if (hires_json.contains("custom_sigmas") && hires_json["custom_sigmas"].is_array()) {
              hires_custom_sigmas = hires_json["custom_sigmas"].get<std::vector<float>>();
          }
-@@ -1991,6 +1995,7 @@ bool SDGenerationParams::from_json_str(
+@@ -1991,6 +1998,7 @@ bool SDGenerationParams::from_json_str(
                                          sd_sample_params_t& target_params,
                                          std::string& target_extra_sample_args,
                                          std::vector<int>& target_skip_layers,
@@ -28,7 +31,7 @@ index 3581215..957d185 100644
                                          std::vector<float>* target_custom_sigmas) {
          if (sample_json.contains("sample_steps") && sample_json["sample_steps"].is_number_integer()) {
              target_params.sample_steps = sample_json["sample_steps"];
-@@ -2024,6 +2029,24 @@ bool SDGenerationParams::from_json_str(
+@@ -2024,6 +2032,24 @@ bool SDGenerationParams::from_json_str(
                  target_params.scheduler = tmp;
              }
          }
@@ -53,7 +56,7 @@ index 3581215..957d185 100644
          if (sample_json.contains("guidance") && sample_json["guidance"].is_object()) {
              const json& guidance_json = sample_json["guidance"];
              if (guidance_json.contains("txt_cfg") && guidance_json["txt_cfg"].is_number()) {
-@@ -2054,13 +2077,14 @@ bool SDGenerationParams::from_json_str(
+@@ -2054,13 +2080,14 @@ bool SDGenerationParams::from_json_str(
      };
  
      if (j.contains("sample_params") && j["sample_params"].is_object()) {
@@ -69,7 +72,7 @@ index 3581215..957d185 100644
                                   nullptr);
      }
  
-@@ -2521,6 +2545,10 @@ sd_img_gen_params_t SDGenerationParams::to_sd_img_gen_params_t() {
+@@ -2521,6 +2548,10 @@ sd_img_gen_params_t SDGenerationParams::to_sd_img_gen_params_t() {
      sample_params.guidance.slg.layer_count            = skip_layers.size();
      high_noise_sample_params.guidance.slg.layers      = high_noise_skip_layers.empty() ? nullptr : high_noise_skip_layers.data();
      high_noise_sample_params.guidance.slg.layer_count = high_noise_skip_layers.size();
@@ -80,15 +83,16 @@ index 3581215..957d185 100644
      sample_params.custom_sigmas                       = custom_sigmas.empty() ? nullptr : custom_sigmas.data();
      sample_params.custom_sigmas_count                 = static_cast<int>(custom_sigmas.size());
      sample_params.extra_sample_args                   = extra_sample_args.empty() ? nullptr : extra_sample_args.c_str();
-@@ -2590,6 +2618,7 @@ sd_img_gen_params_t SDGenerationParams::to_sd_img_gen_params_t() {
+@@ -2590,6 +2621,8 @@ sd_img_gen_params_t SDGenerationParams::to_sd_img_gen_params_t() {
      params.hires.target_height       = hires_height;
      params.hires.steps               = hires_steps;
      params.hires.denoising_strength  = hires_denoising_strength;
 +    params.hires.noise_multiplier    = hires_noise_multiplier;
++    params.hires.return_lowres_image = hires_return_lowres_image;
      params.hires.upscale_tile_size   = hires_upscale_tile_size;
      params.hires.custom_sigmas       = hires_custom_sigmas.empty() ? nullptr : hires_custom_sigmas.data();
      params.hires.custom_sigmas_count = static_cast<int>(hires_custom_sigmas.size());
-@@ -2650,6 +2679,10 @@ sd_vid_gen_params_t SDGenerationParams::to_sd_vid_gen_params_t() {
+@@ -2650,6 +2683,10 @@ sd_vid_gen_params_t SDGenerationParams::to_sd_vid_gen_params_t() {
      sample_params.guidance.slg.layer_count            = skip_layers.size();
      high_noise_sample_params.guidance.slg.layers      = high_noise_skip_layers.empty() ? nullptr : high_noise_skip_layers.data();
      high_noise_sample_params.guidance.slg.layer_count = high_noise_skip_layers.size();
@@ -99,16 +103,17 @@ index 3581215..957d185 100644
      sample_params.custom_sigmas                       = custom_sigmas.empty() ? nullptr : custom_sigmas.data();
      sample_params.custom_sigmas_count                 = static_cast<int>(custom_sigmas.size());
      sample_params.extra_sample_args                   = extra_sample_args.empty() ? nullptr : extra_sample_args.c_str();
-@@ -2692,6 +2725,7 @@ sd_vid_gen_params_t SDGenerationParams::to_sd_vid_gen_params_t() {
+@@ -2692,6 +2729,8 @@ sd_vid_gen_params_t SDGenerationParams::to_sd_vid_gen_params_t() {
      params.hires.target_height       = hires_height;
      params.hires.steps               = hires_steps;
      params.hires.denoising_strength  = hires_denoising_strength;
 +    params.hires.noise_multiplier    = hires_noise_multiplier;
++    params.hires.return_lowres_image = hires_return_lowres_image;
      params.hires.upscale_tile_size   = hires_upscale_tile_size;
      params.hires.custom_sigmas       = hires_custom_sigmas.empty() ? nullptr : hires_custom_sigmas.data();
      params.hires.custom_sigmas_count = static_cast<int>(hires_custom_sigmas.size());
 diff --git a/examples/common/common.h b/examples/common/common.h
-index 34b4a01..46e1696 100644
+index 34b4a01..5210cc6 100644
 --- a/examples/common/common.h
 +++ b/examples/common/common.h
 @@ -223,6 +223,8 @@ struct SDGenerationParams {
@@ -120,11 +125,12 @@ index 34b4a01..46e1696 100644
  
      std::vector<float> custom_sigmas;
  
-@@ -263,6 +265,7 @@ struct SDGenerationParams {
+@@ -263,6 +265,8 @@ struct SDGenerationParams {
      int hires_height               = 0;
      int hires_steps                = 0;
      float hires_denoising_strength = 0.7f;
 +    float hires_noise_multiplier   = 1.0f;
++    bool hires_return_lowres_image = false;
      int hires_upscale_tile_size    = 128;
      std::vector<float> hires_custom_sigmas;
  
@@ -221,7 +227,7 @@ index 7253dbf..e7bb6e8 100644
          try {
              if (req.body.empty()) {
 diff --git a/include/stable-diffusion.h b/include/stable-diffusion.h
-index bab62ba..644bc74 100644
+index bab62ba..73c2564 100644
 --- a/include/stable-diffusion.h
 +++ b/include/stable-diffusion.h
 @@ -266,6 +266,15 @@ typedef struct {
@@ -248,7 +254,7 @@ index bab62ba..644bc74 100644
      const char* extra_sample_args;
  } sd_sample_params_t;
  
-@@ -364,6 +374,9 @@ typedef struct {
+@@ -364,7 +374,14 @@ typedef struct {
      int target_height;
      int steps;
      float denoising_strength;
@@ -256,8 +262,13 @@ index bab62ba..644bc74 100644
 +    // denoising schedule. 1.0 leaves the schedule's own starting noise alone.
 +    float noise_multiplier;
      int upscale_tile_size;
++    // Also return the pre-upscale image. The low-res latent is already in memory
++    // at that point, so decoding it costs one VAE pass instead of a second
++    // sampling run at the base resolution.
++    bool return_lowres_image;
      float* custom_sigmas;
      int custom_sigmas_count;
+ } sd_hires_params_t;
 diff --git a/src/model/diffusion/krea2.hpp b/src/model/diffusion/krea2.hpp
 index b3947b7..c260ddb 100644
 --- a/src/model/diffusion/krea2.hpp
@@ -660,7 +671,7 @@ index 69bcaa1..5eeda8d 100644
                  tensor_storage.ne[0]  = tensor_storage.ne[1];
                  tensor_storage.ne[1]  = 1;
 diff --git a/src/stable-diffusion.cpp b/src/stable-diffusion.cpp
-index 7370f6a..6d42318 100644
+index 7370f6a..7c1083c 100644
 --- a/src/stable-diffusion.cpp
 +++ b/src/stable-diffusion.cpp
 @@ -2516,6 +2516,7 @@ public:
@@ -697,36 +708,35 @@ index 7370f6a..6d42318 100644
  
          std::vector<float> guidance_schedule = sd::guidance::parse_guidance_schedule(extra_sample_args);
          if (!guidance_schedule.empty() && guidance_schedule.size() != sigmas.size() - 1) {
-@@ -2617,9 +2628,25 @@ public:
+@@ -2617,9 +2628,24 @@ public:
          int64_t last_progress_us     = ggml_time_us();
          SamplePreviewContext preview = prepare_sample_preview_context();
  
 -        sd::Tensor<float> x_t      = !noise.empty()
 -                                         ? denoiser->noise_scaling(sigmas[0], noise, init_latent)
 -                                         : init_latent;
-+        // Img2img can independently control the amount of random noise added to
-+        // the encoded source. The denoising strength still selects the schedule;
-+        // noise_add=0 keeps the initial latent untouched.
-+        float noise_add = 1.f;
++        // The denoising strength selects the schedule, whose starting sigma sets how
++        // much noise the encoded source receives. This scales that sigma, so 0 keeps
++        // the initial latent untouched. It is deliberately uncapped above 1: pushing
++        // past the schedule's own starting point is the point of exposing it.
++        float img2img_noise_multiplier = 1.f;
 +        for (const auto& [key, value] : parse_key_value_args(extra_sample_args, "sample arg")) {
-+            if (key == "img2img_noise_add") {
++            if (key == "img2img_noise_multiplier") {
 +                try {
-+                    noise_add = std::clamp(std::stof(value), 0.f, 1.f);
++                    img2img_noise_multiplier = std::max(std::stof(value), 0.f);
 +                } catch (...) {
-+                    LOG_WARN("ignoring invalid img2img_noise_add value '%s'", value.c_str());
++                    LOG_WARN("ignoring invalid img2img_noise_multiplier value '%s'", value.c_str());
 +                }
 +            }
 +        }
-+        // The multiplier is deliberately uncapped: values above 1 add more noise
-+        // than the schedule's own starting point, which is the point of exposing it.
-+        float initial_sigma = sigmas.empty() ? 0.f : sigmas[0] * noise_add * noise_sigma_multiplier;
++        float initial_sigma = sigmas.empty() ? 0.f : sigmas[0] * img2img_noise_multiplier * noise_sigma_multiplier;
 +        sd::Tensor<float> x_t = !noise.empty()
 +                                    ? denoiser->noise_scaling(initial_sigma, noise, init_latent)
 +                                    : init_latent;
          sd::Tensor<float> denoised = x_t;
  
          auto denoise = [&](const sd::Tensor<float>& x, float sigma, int step) -> sd::guidance::GuiderOutput {
-@@ -2687,6 +2714,7 @@ public:
+@@ -2687,6 +2713,7 @@ public:
              }
  
              sd::Tensor<float> cond_out;
@@ -734,7 +744,7 @@ index 7370f6a..6d42318 100644
              sd::Tensor<float> uncond_out;
              sd::Tensor<float> img_uncond_out;
              sd_sample::SampleStepCacheDispatcher step_cache(cache_runtime, step, sigma);
-@@ -2699,6 +2727,9 @@ public:
+@@ -2699,6 +2726,9 @@ public:
              step_guidance_input.step          = step;
              step_guidance_input.schedule_size = sigmas.size();
              bool is_skiplayer_step            = skip_layer_guidance.is_enabled_for_step(step_guidance_input);
@@ -744,7 +754,7 @@ index 7370f6a..6d42318 100644
  
              compute_sample_controls(control_image,
                                      noised_input,
-@@ -2715,11 +2746,15 @@ public:
+@@ -2715,11 +2745,15 @@ public:
                                       const sd::Tensor<float>* c_concat_override                 = nullptr,
                                       const std::vector<int>* local_skip_layers                  = nullptr,
                                       const std::vector<sd::Tensor<float>>* ref_latents_override = nullptr,
@@ -761,7 +771,7 @@ index 7370f6a..6d42318 100644
  
                  if (sd_version_is_unet(version)) {
                      int nvf = -1;
-@@ -2781,7 +2816,7 @@ public:
+@@ -2781,7 +2815,7 @@ public:
                  }
  
                  sd::Tensor<float> cached_output;
@@ -770,7 +780,7 @@ index 7370f6a..6d42318 100644
                      return std::move(cached_output);
                  }
  
-@@ -2795,7 +2830,9 @@ public:
+@@ -2795,7 +2829,9 @@ public:
                      return sd::Tensor<float>();
                  }
  
@@ -781,7 +791,7 @@ index 7370f6a..6d42318 100644
                  return output_opt;
              };
  
-@@ -2812,11 +2849,31 @@ public:
+@@ -2812,11 +2848,31 @@ public:
                  }
              }
  
@@ -814,7 +824,7 @@ index 7370f6a..6d42318 100644
              if (!uncond.empty()) {
                  if (!step_cache.is_step_skipped()) {
                      compute_sample_controls(control_image,
-@@ -2834,7 +2891,9 @@ public:
+@@ -2834,7 +2890,9 @@ public:
                                             uncond.c_concat.empty() ? nullptr : &uncond.c_concat,
                                             uncond_skip_layers,
                                             nullptr,
@@ -825,7 +835,7 @@ index 7370f6a..6d42318 100644
                  if (uncond_out.empty()) {
                      return {};
                  }
-@@ -2844,7 +2903,9 @@ public:
+@@ -2844,7 +2902,9 @@ public:
                                                 img_uncond.c_concat.empty() ? nullptr : &img_uncond.c_concat,
                                                 nullptr,
                                                 uncond_without_ref_latents ? &empty_ref_latents : nullptr,
@@ -836,7 +846,7 @@ index 7370f6a..6d42318 100644
                  if (img_uncond_out.empty()) {
                      return {};
                  }
-@@ -2861,6 +2922,10 @@ public:
+@@ -2861,6 +2921,10 @@ public:
                  return {};
              }
  
@@ -847,7 +857,7 @@ index 7370f6a..6d42318 100644
              if (is_skiplayer_step && slg_scale != 0.0f) {
                  LOG_DEBUG("Skipping layers at step %d\n", step);
                  if (!step_cache.is_step_skipped()) {
-@@ -3224,6 +3289,22 @@ public:
+@@ -3224,6 +3288,22 @@ public:
                  if (!parse_strict_int(value, params.vlm_min_size)) {
                      LOG_WARN("ignoring invalid reference image arg '%s=%s'", key.c_str(), value.c_str());
                  }
@@ -870,7 +880,7 @@ index 7370f6a..6d42318 100644
              } else if (key != "preset" && key != "vlm_size") {
                  LOG_WARN("ignoring unknown reference image arg '%s'", key.c_str());
              }
-@@ -3244,6 +3325,12 @@ public:
+@@ -3244,6 +3324,12 @@ public:
          if (params.force_ref_timestep_zero && !sd_version_is_krea2(version)) {
              LOG_WARN("force_ref_timestep_zero is only supported by Krea2 architecture for now");
          }
@@ -883,14 +893,16 @@ index 7370f6a..6d42318 100644
          return params;
      }
  };
-@@ -3546,6 +3633,7 @@ void sd_hires_params_init(sd_hires_params_t* hires_params) {
+@@ -3546,7 +3632,9 @@ void sd_hires_params_init(sd_hires_params_t* hires_params) {
      hires_params->target_height       = 0;
      hires_params->steps               = 0;
      hires_params->denoising_strength  = 0.7f;
 +    hires_params->noise_multiplier    = 1.0f;
      hires_params->upscale_tile_size   = 128;
++    hires_params->return_lowres_image = false;
      hires_params->custom_sigmas       = nullptr;
      hires_params->custom_sigmas_count = 0;
+ }
 @@ -3669,6 +3757,12 @@ void sd_sample_params_init(sd_sample_params_t* sample_params) {
      sample_params->custom_sigmas               = nullptr;
      sample_params->custom_sigmas_count         = 0;
@@ -937,7 +949,24 @@ index 7370f6a..6d42318 100644
      sd_img_gen_params->seed                = -1;
      sd_img_gen_params->batch_count         = 1;
      sd_img_gen_params->control_strength    = 0.9f;
-@@ -5096,6 +5200,21 @@ static std::optional<ImageGenerationLatents> prepare_image_generation_latents(sd
+@@ -5072,9 +5176,15 @@ static std::optional<ImageGenerationLatents> prepare_image_generation_latents(sd
+         LOG_INFO("EDIT mode");
+     }
+ 
++    // Reference latents are consumed only when they reach the DiT, except on the PiD
++    // and unet-edit paths which read them directly. A reference attached purely so the
++    // vision tower can read it would otherwise pay for a VAE encode that is discarded.
++    const bool ref_latents_are_consumed = ref_image_params.pass_to_dit ||
++                                          sd_version_is_pid(sd_ctx->sd->version) ||
++                                          sd_version_is_unet_edit(sd_ctx->sd->version);
+     std::vector<sd::Tensor<float>> ref_latents;
+     for (size_t i = 0; i < ref_images.size(); i++) {
+-        if (sd_ctx->sd->version == VERSION_HIDREAM_O1) {
++        if (sd_ctx->sd->version == VERSION_HIDREAM_O1 || !ref_latents_are_consumed) {
+             continue;
+         }
+         sd::Tensor<float> ref_latent;
+@@ -5096,6 +5206,21 @@ static std::optional<ImageGenerationLatents> prepare_image_generation_latents(sd
              vae_height = round(vae_height / factor) * factor;
              vae_width  = round(vae_width / factor) * factor;
  
@@ -959,7 +988,7 @@ index 7370f6a..6d42318 100644
              auto resized_ref_img = sd::ops::interpolate(ref_images[i],
                                                          {static_cast<int>(vae_width),
                                                           static_cast<int>(vae_height),
-@@ -5698,6 +5817,7 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
+@@ -5698,6 +5823,7 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
                                                     latents.control_image,
                                                     request.control_strength,
                                                     request.guidance,
@@ -967,7 +996,45 @@ index 7370f6a..6d42318 100644
                                                     plan.eta,
                                                     request.shifted_timestep,
                                                     plan.sample_method,
-@@ -5819,6 +5939,7 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
+@@ -5734,11 +5860,37 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
+         return false;
+     }
+ 
++    // Decoded before the hires pass replaces the latents it came from, so asking for
++    // the pre-upscale image costs a VAE decode rather than a second sampling run.
++    // The guard owns them until they are handed to the caller, since every failure
++    // path inside the hires pass returns without reaching that point.
++    struct DecodedImagesOwner {
++        sd_image_t* images = nullptr;
++        int count          = 0;
++        ~DecodedImagesOwner() {
++            if (images != nullptr) {
++                free_sd_images(images, count);
++            }
++        }
++        sd_image_t* release() {
++            sd_image_t* released = images;
++            images               = nullptr;
++            return released;
++        }
++    } lowres;
++
+     if (request.hires.enabled && request.hires.target_width > 0) {
+         if (sd_ctx->sd->get_cancel_flag() == SD_CANCEL_ALL) {
+             LOG_ERROR("cancelling generation before hires fix");
+             return false;
+         }
++        if (request.hires.return_lowres_image) {
++            lowres.images = decode_image_outputs(sd_ctx, request, final_latents, &lowres.count);
++            if (lowres.images == nullptr) {
++                LOG_ERROR("failed to decode the pre-upscale image");
++                return false;
++            }
++        }
+         LOG_INFO("hires fix: upscaling to %dx%d", request.hires.target_width, request.hires.target_height);
+ 
+         std::unique_ptr<UpscalerGGML> hires_upscaler;
+@@ -5819,6 +5971,7 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
                                                              latents.control_image,
                                                              request.control_strength,
                                                              request.guidance,
@@ -975,7 +1042,7 @@ index 7370f6a..6d42318 100644
                                                              plan.eta,
                                                              request.shifted_timestep,
                                                              plan.sample_method,
-@@ -5832,7 +5953,9 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
+@@ -5832,7 +5985,9 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
                                                              1.f,
                                                              0,
                                                              static_cast<float>(request.fps),
@@ -986,7 +1053,32 @@ index 7370f6a..6d42318 100644
              int64_t hires_sample_end   = ggml_time_ms();
              if (!x_0.empty()) {
                  LOG_INFO("hires sampling %d/%d completed, taking %.2fs",
-@@ -6952,6 +7075,7 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
+@@ -5861,6 +6016,24 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
+         return false;
+     }
+ 
++    // Pre-upscale images lead, so the caller reads the batch as [low-res..., hires...].
++    if (lowres.images != nullptr) {
++        const int combined_count = lowres.count + num_images;
++        auto* combined           = (sd_image_t*)calloc(combined_count, sizeof(sd_image_t));
++        if (combined == nullptr) {
++            LOG_ERROR("failed to allocate the combined image list");
++            free_sd_images(result, num_images);
++            return false;
++        }
++        memcpy(combined, lowres.images, lowres.count * sizeof(sd_image_t));
++        memcpy(combined + lowres.count, result, num_images * sizeof(sd_image_t));
++        // The pixel buffers moved to `combined`; only the containers are released.
++        free(lowres.release());
++        free(result);
++        result     = combined;
++        num_images = combined_count;
++    }
++
+     sd_ctx->sd->lora_stat();
+ 
+     int64_t t1 = ggml_time_ms();
+@@ -6952,6 +7125,7 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
                                                             sd::Tensor<float>(),
                                                             0.f,
                                                             request.high_noise_guidance,
@@ -994,7 +1086,7 @@ index 7370f6a..6d42318 100644
                                                             plan.high_noise_eta,
                                                             request.shifted_timestep,
                                                             plan.high_noise_sample_method,
-@@ -6994,6 +7118,7 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
+@@ -6994,6 +7168,7 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
                                                          sd::Tensor<float>(),
                                                          0.f,
                                                          sd_vid_gen_params->sample_params.guidance,
@@ -1002,7 +1094,7 @@ index 7370f6a..6d42318 100644
                                                          plan.eta,
                                                          sd_vid_gen_params->sample_params.shifted_timestep,
                                                          plan.sample_method,
-@@ -7132,6 +7257,7 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
+@@ -7132,6 +7307,7 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
                                              sd::Tensor<float>(),
                                              0.f,
                                              sd_vid_gen_params->sample_params.guidance,

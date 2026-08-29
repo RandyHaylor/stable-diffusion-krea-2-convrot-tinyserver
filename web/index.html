@@ -98,8 +98,10 @@ button.danger{background:#49252a;border-color:#813942}
 .lorarow .loraname{flex:1;color:#edf1f7;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .lorarow .lorasize{font-size:11px;color:var(--muted);flex:none}
 .lorarow input[type=number]{width:74px;flex:none;padding:5px 6px}
-.lorarow .lorahires{display:flex;align-items:center;gap:4px;flex:none;color:var(--muted);font-size:11px}
+.lorarow .loramain,.lorarow .lorahires{display:flex;align-items:center;gap:4px;flex:none;color:var(--muted);font-size:11px}
 .hires-variation-notice{margin:8px 0;padding:7px 9px;border-radius:6px;background:#2a2410;border:1px solid #5c4a15;color:#e8cf86;font-size:12px}
+.wd14-unused-notice{color:#e08a3c;font-size:11px;margin-left:4px;font-weight:600}
+.reference-fidelity-vram-notice{color:#e08a3c;font-size:11px;margin-left:4px;font-weight:600}
 #loginGate{position:fixed;inset:0;z-index:100;background:var(--bg);display:flex;align-items:center;justify-content:center}
 #loginGate form{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:22px;width:320px}
 #loginGate h2{margin:0 0 12px;color:#edf1f7;font-size:18px}
@@ -164,6 +166,7 @@ button.danger{background:#49252a;border-color:#813942}
   <button class="danger" style="width:auto" onclick="post('/api/cancel-current')">Kill current</button>
   <button class="danger" style="width:auto" onclick="post('/api/clear')">Clear waiting</button>
   <button class="danger" style="width:auto" onclick="post('/api/kill-all')">Kill all</button>
+  <button style="width:auto" title="Stop the model server so the GPU gets its VRAM back. The next queued generation loads the weights again." onclick="post('/api/unload-models')">Unload models</button>
 </div>
 
 <div class="logpanel">
@@ -238,10 +241,10 @@ button.danger{background:#49252a;border-color:#813942}
   </div>
 
   <div class="checks">
-    <label title="Add the WD14 tags from every ticked image to the main prompt. With this on, a prompt is optional."><input id="main_append_wd14_tags" type="checkbox"> Append WD14 tags</label>
-    <label><input id="hires" type="checkbox" onchange="refreshHiresVariationNotice()"> Hires pass</label>
+    <label title="Add the WD14 tags from every ticked image to the main prompt. With this on, a prompt is optional."><input id="main_append_wd14_tags" type="checkbox" onchange="refreshNoticesThatDependOnStageSettings()"> Append WD14 tags</label>
+    <label><input id="hires" type="checkbox" onchange="refreshNoticesThatDependOnStageSettings()"> Hires pass</label>
     <label><input id="save_lowres" type="checkbox"> Save low-res too</label>
-    <label title="Runs the low-res pass first so the vision model can read it. Also adds the low-res image as a DiT reference, which costs VRAM at high hires targets."><input id="hires_use_vision_on_lowres" type="checkbox"> Use vision on low-res</label>
+    <label title="Runs the low-res pass first and lets the vision model read its output, so the hires pass is conditioned on what the first stage actually produced. The image reaches the vision tower only, never the DiT."><input id="hires_use_vision_on_lowres" type="checkbox"> Get vision data from lowres for hires pass</label>
   </div>
 
   <h2 style="margin-top:16px">LoRAs</h2>
@@ -264,8 +267,9 @@ button.danger{background:#49252a;border-color:#813942}
     <div><label for="hires_negative_prompt">Hires negative prompt</label><input id="hires_negative_prompt" value="" autocomplete="off" oninput="refreshHiresVariationNotice()"></div>
     <div><label for="hires_negative_prompt_mode">Hires negative mode</label><div class="combo" data-field="hires_negative_prompt_mode"></div></div>
   </div>
-  <div class="fields">
+  <div class="fields two">
     <div><label for="hires_wd14_tag_source">Hires WD14 tags</label><div class="combo" data-field="hires_wd14_tag_source"></div></div>
+    <div><label for="hires_reference_encode_size" title="Edge length Krea2 Edit references are encoded at for the hires pass; the budget is that many pixels squared. Reference tokens share one attention sequence with the target, and its VRAM cost grows with the square of the total, so a smaller reference is what makes room at a large hires target. Auto keeps the full budget. Anything else runs the hires stage as its own request.">Hires reference size</label><div class="combo" data-field="hires_reference_encode_size"></div></div>
   </div>
 
   <div class="fields two">
@@ -311,13 +315,13 @@ button.danger{background:#49252a;border-color:#813942}
         <span id="selectedSourceResolution"></span>
         <button type="button" onclick="chooseSourceImage()">Load source image</button>
         <label class="source-choice-radio" title="Lets the vision model read the source image; Krea2 never shows it the init image on its own. Also adds the source as a DiT reference, which costs VRAM."><input id="img2img_use_vision_on_source" type="checkbox"> Use vision on source</label>
-        <label class="source-choice-radio" title="Run WD14 on the source image and add its danbooru tags to the prompt"><input id="img2img_wd14_tag" type="checkbox"> Tag source with WD14</label>
+        <label class="source-choice-radio" title="Read WD14 danbooru tags from the source image. A stage still has to ask for them: tick 'Append WD14 tags' for the main pass, or set the hires tag source to the reference images."><input id="img2img_wd14_tag" type="checkbox"> Tag source with WD14<span class="wd14-unused-notice" hidden>(unused)</span></label>
         <input id="sourceImageFile" type="file" accept="image/png,image/jpeg,.png,.jpg,.jpeg" hidden>
       </div>
     </div>
     <div class="fields two img2img-settings">
       <div><label for="img2img_denoise">Img2img denoise strength</label><div class="combo" data-field="img2img_denoise"></div></div>
-      <div><label for="img2img_noise_add">Img2img noise add</label><div class="combo" data-field="img2img_noise_add"></div></div>
+      <div><label for="img2img_noise_multiplier">Img2img noise multiplier</label><div class="combo" data-field="img2img_noise_multiplier"></div></div>
     </div>
   </div>
   <div class="result-tabs" role="tablist" aria-label="Queue and output views">
@@ -348,7 +352,7 @@ const COMBO_FIELDS = {
   seed:            {value:'0',   step:1,    options:['-1','0','42']},
   steps:           {value:'6',   step:1,    options:['3','6','8','12','28','52']},
   cfg:             {value:'1',   step:0.1,  options:['1','3.5','4.5','7']},
-  sampler:         {value:'er_sde',   options:[]},
+  sampler:         {value:'euler',    options:[]},
   scheduler:       {value:'discrete', options:[]},
   flow_shift:      {value:'1.15', step:0.05, options:['1','1.15','2','3']},
   beta_schedule_alpha: {value:'0.5', step:0.05, options:['0.3','0.5','0.6']},
@@ -364,13 +368,14 @@ const COMBO_FIELDS = {
   hires_prompt_mode:          {value:'append', options:['append','prepend','replace']},
   hires_negative_prompt_mode: {value:'append', options:['append','prepend','replace']},
   hires_wd14_tag_source:      {value:'none',   options:['none','reference_images','stage_one']},
+  hires_reference_encode_size:{value:'auto',   options:['auto','384','512','640','768','896','1024']},
   vae_tile_size:   {value:'32',  step:1,    options:['32','64','68','128','256','512']},
   img2img_denoise: {value:'0', step:0.05, options:['0','0.15','0.35','0.5','0.65','0.75','0.9']},
-  img2img_noise_add: {value:'0', step:0.05, options:['0','0.1','0.25','0.5','0.75','1']},
+  img2img_noise_multiplier: {value:'1', step:0.05, options:['0','0.25','0.5','0.75','1','1.25','1.5','2']},
   grounding_px:    {value:'768', step:64,   options:['384','512','640','768']},
   fit_mode:        {value:'fit', options:['fit','crop']},
 };
-const NUMERIC_FIELDS = ['seed','steps','cfg','flow_shift','pag_scale','pag_start','pag_end','hires_steps','hires_denoise','vae_tile_size','img2img_denoise','img2img_noise_add','grounding_px','beta_schedule_alpha','beta_schedule_beta','hires_noise_multiplier'];
+const NUMERIC_FIELDS = ['seed','steps','cfg','flow_shift','pag_scale','pag_start','pag_end','hires_steps','hires_denoise','vae_tile_size','img2img_denoise','img2img_noise_multiplier','grounding_px','beta_schedule_alpha','beta_schedule_beta','hires_noise_multiplier'];
 const TEXT_FIELDS = ['sampler','scheduler','hires_upscaler','extra_sample_args','pag_layers','fit_mode',
   'hires_prompt','hires_prompt_mode','hires_negative_prompt','hires_negative_prompt_mode','hires_wd14_tag_source'];
 
@@ -407,7 +412,7 @@ function buildEditableCombobox(container){
   container.querySelector('.combo-toggle').onclick = () =>
     list.classList.contains('open') ? closeList() : openList('');
   input.onfocus = () => openList('');
-  input.oninput = () => openList(input.value);
+  input.oninput = () => { openList(input.value); refreshNoticesThatDependOnStageSettings(); };
   input.onkeydown = e => { if (e.key === 'Escape') closeList(); if (e.key === 'Enter') closeList(); };
   list.onmousedown = e => {
     const option = e.target.closest('[data-value]');
@@ -415,6 +420,7 @@ function buildEditableCombobox(container){
     e.preventDefault();
     input.value = option.dataset.value;
     closeList();
+    refreshNoticesThatDependOnStageSettings();
   };
   input.onblur = () => setTimeout(closeList, 120);
 }
@@ -567,10 +573,11 @@ function addKrea2EditReferencePanel(filename = '', referenceFidelity = RECOMMEND
       `<span class="krea2edit-reference-resolution"></span>` +
       `<div class="krea2edit-reference-actions">` +
         `<button type="button" class="krea2edit-reference-load">Load image</button>` +
-        `<label class="krea2edit-reference-boost">fidelity` +
-          `<input type="number" class="krea2edit-reference-boost-input" value="${referenceFidelity}" step="0.5" min="0" autocomplete="off">` +
+        `<label class="krea2edit-reference-boost" title="How hard the target attends to this reference. Any value other than 1 makes the runtime build a dense attention mask sized by the square of the whole sequence, which costs hundreds of MB of VRAM at a large hires target. Exactly 1 skips the mask entirely.">fidelity` +
+          `<input type="number" class="krea2edit-reference-boost-input" value="${referenceFidelity}" step="0.5" min="0" autocomplete="off" oninput="refreshReferenceFidelityVramNotices()">` +
+          `<span class="reference-fidelity-vram-notice" hidden>(extra VRAM)</span>` +
         `</label>` +
-        `<label class="krea2edit-reference-tag" title="Run WD14 on this reference and add its danbooru tags to the prompt"><input type="checkbox" class="krea2edit-reference-tag-input"> tag</label>` +
+        `<label class="krea2edit-reference-tag" title="Read WD14 danbooru tags from this reference. A stage still has to ask for them: tick 'Append WD14 tags' for the main pass, or set the hires tag source to the reference images."><input type="checkbox" class="krea2edit-reference-tag-input"> tag<span class="wd14-unused-notice" hidden>(unused)</span></label>` +
         `<button type="button" class="krea2edit-reference-remove">Remove</button>` +
       `</div>` +
     `</div>`;
@@ -587,6 +594,8 @@ function addKrea2EditReferencePanel(filename = '', referenceFidelity = RECOMMEND
   $('krea2EditReferenceList').appendChild(panel);
   renumberKrea2EditReferencePanels();
   setKrea2EditReferenceImage(panel, filename);
+  refreshWd14UnusedNotices();
+  refreshReferenceFidelityVramNotices();
   return panel;
 }
 
@@ -719,11 +728,11 @@ function renderLoraList(loras){
   if (!loras.length) { $('loraList').textContent = 'no LoRAs found in models/loras'; return; }
   $('loraList').innerHTML = loras.map((lora, index) =>
     `<div class="lorarow">` +
-      `<input type="checkbox" id="loraEnabled${index}" data-filename="${escapeHtml(lora.filename)}" onchange="refreshHiresVariationNotice()">` +
+      `<label class="loramain" title="Use this LoRA in the main pass."><input type="checkbox" id="loraUseInMain${index}" data-filename="${escapeHtml(lora.filename)}" onchange="refreshHiresVariationNotice()"> main</label>` +
       `<span class="loraname" title="${escapeHtml(lora.filename)}">${escapeHtml(lora.name)}</span>` +
       `<span class="lorasize">${lora.size_mb} MB</span>` +
       `<input type="number" id="loraStrength${index}" value="1" step="0.05" autocomplete="off">` +
-      `<label class="lorahires" title="Use this LoRA in the hires pass too. A hires selection that differs from the main one reloads weights."><input type="checkbox" id="loraHires${index}" checked onchange="refreshHiresVariationNotice()"> hires</label>` +
+      `<label class="lorahires" title="Use this LoRA in the hires pass. A hires selection that differs from the main one reloads weights."><input type="checkbox" id="loraUseInHires${index}" onchange="refreshHiresVariationNotice()"> hires</label>` +
     `</div>`
   ).join('');
   refreshHiresVariationNotice();
@@ -732,27 +741,55 @@ function renderLoraList(loras){
 function collectSelectedLoras(){
   return Array.from(document.querySelectorAll('#loraList .lorarow'))
     .map(row => ({
-      filename: row.querySelector('input[type=checkbox]').dataset.filename,
+      filename: row.querySelector('.loramain input[type=checkbox]').dataset.filename,
       strength: Number(row.querySelector('input[type=number]').value),
+      use_in_main: row.querySelector('.loramain input[type=checkbox]').checked,
       use_in_hires: row.querySelector('.lorahires input[type=checkbox]').checked,
-      checked: row.querySelector('input[type=checkbox]').checked,
     }))
-    .filter(entry => entry.checked)
-    .map(({filename, strength, use_in_hires}) => ({filename, strength, use_in_hires}));
+    .filter(entry => entry.use_in_main || entry.use_in_hires);
+}
+
+function hiresReferenceEncodeSize(){
+  const chosen = Number($('hires_reference_encode_size').value);
+  return Number.isFinite(chosen) && chosen > 0 ? chosen : 0;
 }
 
 function hiresSettingsVaryFromMain(){
   if (!$('hires').checked) return false;
-  const loraSelectionDiffers = collectSelectedLoras().some(lora => !lora.use_in_hires);
+  const loraSelectionDiffers = collectSelectedLoras().some(lora => lora.use_in_main !== lora.use_in_hires);
   return loraSelectionDiffers
     || $('hires_prompt').value.trim() !== ''
     || $('hires_negative_prompt').value.trim() !== ''
-    || $('hires_wd14_tag_source').value !== 'none';
+    || $('hires_wd14_tag_source').value !== 'none'
+    || hiresReferenceEncodeSize() > 0;
 }
 
 function refreshHiresVariationNotice(){
   const notice = $('hiresVariationNotice');
   if (notice) notice.hidden = !hiresSettingsVaryFromMain();
+}
+
+function referenceTagsAreConsumed(){
+  if ($('main_append_wd14_tags').checked) return true;
+  return $('hires').checked && $('hires_wd14_tag_source').value === 'reference_images';
+}
+
+function refreshWd14UnusedNotices(){
+  const consumed = referenceTagsAreConsumed();
+  document.querySelectorAll('.wd14-unused-notice').forEach(notice => { notice.hidden = consumed; });
+}
+
+function refreshReferenceFidelityVramNotices(){
+  document.querySelectorAll('#krea2EditReferenceList .krea2edit-reference-boost').forEach(label => {
+    const fidelity = Number(label.querySelector('.krea2edit-reference-boost-input').value);
+    label.querySelector('.reference-fidelity-vram-notice').hidden = fidelity === 1;
+  });
+}
+
+function refreshNoticesThatDependOnStageSettings(){
+  refreshHiresVariationNotice();
+  refreshWd14UnusedNotices();
+  refreshReferenceFidelityVramNotices();
 }
 
 function collectParams(){
@@ -773,6 +810,7 @@ function collectParams(){
     krea2_edit_enabled: $('krea2_edit_enabled').checked,
     krea2_edit_references: collectKrea2EditReferences(),
     extra_loras: collectSelectedLoras(),
+    hires_reference_encode_size: hiresReferenceEncodeSize(),
     model_name: $('modelName').textContent.trim(),
     checkpoint: $('checkpointSelect').value,
   };
@@ -828,7 +866,7 @@ function formatJobDetails(params){
     ['Generation', generationType],
     ['Img2img source', generationType === 'img2img' ? (p.source_image || '') : ''],
     ['Img2img denoise', generationType === 'img2img' ? (p.img2img_denoise ?? '') : ''],
-    ['Img2img noise add', generationType === 'img2img' ? (p.img2img_noise_add ?? '') : ''],
+    ['Img2img noise multiplier', generationType === 'img2img' ? (p.img2img_noise_multiplier ?? '') : ''],
     ['Img2img vision on source',
      generationType === 'img2img' && p.img2img_use_vision_on_source ? 'On' : ''],
     ['Hires pass', p.hires ? 'On' : 'Off'],
@@ -837,7 +875,7 @@ function formatJobDetails(params){
     ['Denoise', p.hires ? (p.hires_denoise ?? '') : ''],
     ['Hires noise multiplier', p.hires ? (p.hires_noise_multiplier ?? '') : ''],
     ['Save low-res', p.save_lowres ? 'Yes' : 'No'],
-    ['Hires vision on low-res', p.hires && p.hires_use_vision_on_lowres ? 'On' : ''],
+    ['Vision data from lowres for hires', p.hires && p.hires_use_vision_on_lowres ? 'On' : ''],
     ['Main WD14 tags', p.main_append_wd14_tags ? 'On' : ''],
     ['Hires prompt', p.hires ? (p.hires_prompt || '') : ''],
     ['Hires prompt mode', p.hires && p.hires_prompt ? (p.hires_prompt_mode || '') : ''],
@@ -845,6 +883,9 @@ function formatJobDetails(params){
     ['Hires negative mode', p.hires && p.hires_negative_prompt ? (p.hires_negative_prompt_mode || '') : ''],
     ['Hires WD14 tags', p.hires && p.hires_wd14_tag_source && p.hires_wd14_tag_source !== 'none'
       ? p.hires_wd14_tag_source : ''],
+    ['Hires reference size', p.hires && p.hires_reference_encode_size > 0
+      ? p.hires_reference_encode_size : ''],
+    ['Detected WD14 tags', (p.wd14_tags || []).join(' | ')],
     ['VAE tile', p.vae_tile_size ?? ''],
   ];
   return details
@@ -905,40 +946,44 @@ function loadParamsIntoForm(p){
   if (p.img2img && typeof p.img2img === 'object') {
     p.source_image = p.source_image || p.img2img.source_image || '';
     p.img2img_denoise = p.img2img_denoise ?? p.img2img.denoising_strength;
-    p.img2img_noise_add = p.img2img_noise_add ?? p.img2img.noise_add;
+    p.img2img_noise_multiplier = p.img2img_noise_multiplier ?? p.img2img.noise_multiplier;
   }
   p.prompt = p.prompt || p.ui_prompt || '';
   p.cfg = p.cfg ?? p.cfg_scale;
   p.sampler = p.sampler || p.sampler_name;
   p.extra_loras = p.extra_loras || (p.lora || []).map(lora => ({
     filename: lora.path, strength: lora.multiplier ?? 1,
+    use_in_main: true, use_in_hires: true,
   }));
   p.checkpoint = p.checkpoint || p.model_name;
   p.prompt = p.prompt.replace(/\s*<sd_cpp_extra_args>[\s\S]*?<\/sd_cpp_extra_args>\s*$/, '');
   ['prompt','negative_prompt'].forEach(id => { if ($(id)) $(id).value = p[id] || ''; });
   $('extra_sample_args').value = p.extra_sample_args || p.krea_extra_sample_args || '';
   ['resolution','seed','steps','cfg','sampler','scheduler','flow_shift','beta_schedule_alpha','beta_schedule_beta','pag_scale','pag_start','pag_end','pag_layers','hires_resolution',
-   'hires_steps','hires_denoise','hires_noise_multiplier','hires_upscaler','vae_tile_size','img2img_denoise','img2img_noise_add'].forEach(id => {
+   'hires_steps','hires_denoise','hires_noise_multiplier','hires_upscaler','vae_tile_size','img2img_denoise','img2img_noise_multiplier'].forEach(id => {
     if ($(id) && p[id] !== undefined) $(id).value = p[id];
   });
+  $('hires_reference_encode_size').value = p.hires_reference_encode_size > 0
+    ? p.hires_reference_encode_size : 'auto';
   $('hires').checked = !!p.hires;
   $('save_lowres').checked = !!p.save_lowres;
   $('hires_use_vision_on_lowres').checked = !!p.hires_use_vision_on_lowres;
   $('pag_enabled').checked = !!p.pag_enabled;
   if (p.checkpoint) $('checkpointSelect').value = p.checkpoint;
   document.querySelectorAll('#loraList .lorarow').forEach(row => {
-    const filename = row.querySelector('input[type=checkbox]').dataset.filename;
-    const selected = (p.extra_loras || []).find(lora => lora.filename === filename);
-    const checkbox = row.querySelector('input[type=checkbox]');
+    const useInMainCheckbox = row.querySelector('.loramain input[type=checkbox]');
+    const useInHiresCheckbox = row.querySelector('.lorahires input[type=checkbox]');
+    const selected = (p.extra_loras || []).find(lora => lora.filename === useInMainCheckbox.dataset.filename);
     const strength = row.querySelector('input[type=number]');
-    checkbox.checked = !!selected;
+    useInMainCheckbox.checked = !!selected && selected.use_in_main !== false;
+    useInHiresCheckbox.checked = !!selected && !!selected.use_in_hires;
     if (selected) strength.value = selected.strength;
   });
   setSourceImage(p.source_image || '');
   $('img2img_use_vision_on_source').checked = !!p.img2img_use_vision_on_source;
   $('img2img_wd14_tag').checked = !!p.img2img_wd14_tag;
   $('main_append_wd14_tags').checked = !!p.main_append_wd14_tags;
-  refreshHiresVariationNotice();
+  refreshNoticesThatDependOnStageSettings();
   $('krea2_edit_enabled').checked = !!p.krea2_edit_enabled;
   applyKrea2EditReferences(p.krea2_edit_references);
   window.scrollTo({top: 0, behavior: 'smooth'});

@@ -13,6 +13,7 @@ from prompt_composition import (  # noqa: E402
     compose_prompt_with_tag_groups,
     describe_missing_prompt,
     hires_tag_source_needs_stage_one_image,
+    reference_tags_are_consumed,
     resolve_hires_tag_groups,
 )
 
@@ -28,6 +29,20 @@ def check(description: str, condition: bool, detail: str = "") -> None:
 
 
 def main() -> int:
+    check("the main stage appending tags is enough to make tagging worth running",
+          reference_tags_are_consumed(True, False, "none"))
+    check("the hires stage reading reference tags is enough on its own",
+          reference_tags_are_consumed(False, True, "reference_images"),
+          "a lora-free hires pass may want tags the main pass does not")
+    check("nothing consumes reference tags when neither stage asks for them",
+          not reference_tags_are_consumed(False, True, "stage_one"),
+          "stage one tags come from the first stage's output, not the references")
+    check("a hires reference tag source with hires switched off consumes nothing",
+          not reference_tags_are_consumed(False, False, "reference_images"),
+          "the dropdown keeps its value while the hires pass is disabled")
+    check("neither stage appending tags means the tagger must not run at all",
+          not reference_tags_are_consumed(False, False, "none"))
+
     check("tag groups are appended after the prompt, single comma separated",
           compose_prompt_with_tag_groups("a photo", ["cat girl", "maid headdress"])
           == "a photo, cat girl, maid headdress")

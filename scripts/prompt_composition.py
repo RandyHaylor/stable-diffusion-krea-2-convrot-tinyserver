@@ -36,6 +36,20 @@ def hires_tag_source_needs_stage_one_image(hires_tag_source: str) -> bool:
     return hires_tag_source == "stage_one"
 
 
+def reference_tags_are_consumed(main_append_wd14_tags: bool,
+                                hires_enabled: bool,
+                                hires_tag_source: str) -> bool:
+    """Whether any stage will use tags read from the references or the img2img source.
+
+    Ticking an image for tagging only says which images to read; each stage says
+    separately whether it wants the result. When no stage wants it the tagger is
+    never loaded, so the run pays nothing for tags it would discard.
+    """
+    if main_append_wd14_tags:
+        return True
+    return hires_enabled and hires_tag_source == "reference_images"
+
+
 def resolve_hires_tag_groups(hires_tag_source: str,
                              reference_image_tag_groups: list[str],
                              stage_one_tag_groups: list[str]) -> list[str]:

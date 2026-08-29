@@ -86,6 +86,25 @@ def main() -> int:
           == "preset=krea2_edit",
           "zero means native resolution, so no cap should be sent")
 
+    check("the main stage sends no reference encode cap, leaving the preset's own budget",
+          "vae_input_max_pixels" not in build_krea2_edit_ref_image_args(enabled_params()),
+          "only the hires stage shrinks references, and only when asked")
+    check("a hires reference encode size becomes a pixel-area budget",
+          build_krea2_edit_ref_image_args(enabled_params(), reference_encode_size=512)
+          == "preset=krea2_edit,vlm_size=768,vae_input_max_pixels=262144",
+          "the runtime takes an area, so an edge length of N means an N*N budget")
+    check("a larger encode size scales the budget quadratically",
+          build_krea2_edit_ref_image_args(enabled_params(), reference_encode_size=1024)
+          == "preset=krea2_edit,vlm_size=768,vae_input_max_pixels=1048576")
+    check("a non-positive encode size means auto, so no cap is sent",
+          "vae_input_max_pixels" not in build_krea2_edit_ref_image_args(
+              enabled_params(), reference_encode_size=0))
+    check("the encode cap sits alongside the boosts rather than replacing them",
+          build_krea2_edit_ref_image_args(
+              enabled_params(references=[{"filename": "scene.png", "ref_boost": 4}]),
+              reference_encode_size=512)
+          == "preset=krea2_edit,vlm_size=768,vae_input_max_pixels=262144,ref_boost=4")
+
     single_boosted = enabled_params(references=[{"filename": "scene.png", "ref_boost": 4}])
     check("a boosted single reference emits one ref_boost key",
           build_krea2_edit_ref_image_args(single_boosted)

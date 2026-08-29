@@ -14,15 +14,16 @@ from __future__ import annotations
 def select_loras_for_stage(extra_loras: list[dict], stage: str) -> list[dict]:
     """The backend-shaped LoRA list for one stage.
 
-    The main stage uses every selected LoRA. The hires stage uses only those
-    whose hires column is ticked, so an unticked LoRA is dropped rather than
-    carried over.
+    Each stage has its own tick, so a LoRA can be main-only, hires-only or
+    both. A LoRA left unticked for a stage is dropped from it rather than
+    carried over from the other stage.
     """
+    stage_tick = {"main": "use_in_main", "hires": "use_in_hires"}[stage]
     return [{"path": str(lora.get("filename", "")),
              "multiplier": float(lora.get("strength", 1.0)),
              "is_high_noise": False}
             for lora in extra_loras
-            if stage == "main" or lora.get("use_in_hires")]
+            if lora.get(stage_tick)]
 
 
 def lora_selections_differ(main_stage_loras: list[dict], hires_stage_loras: list[dict]) -> bool:
@@ -41,15 +42,19 @@ def hires_settings_vary_from_main(hires_enabled: bool,
                                   extra_loras: list[dict],
                                   hires_prompt: str = "",
                                   hires_negative_prompt: str = "",
-                                  hires_tag_source: str = "none") -> bool:
+                                  hires_tag_source: str = "none",
+                                  hires_reference_encode_size: int = 0) -> bool:
     """Whether the hires stage's settings differ from the main stage's.
 
-    One request carries one LoRA selection and one prompt, both shared by the
-    two stages. Any variation therefore has to run as its own request, which
-    reloads weights and costs the latent continuity the in-request hires enjoys.
+    One request carries one LoRA selection, one prompt and one ref_image_args,
+    all shared by the two stages. Any variation therefore has to run as its own
+    request, which reloads weights and costs the latent continuity the
+    in-request hires enjoys.
     """
     if not hires_enabled:
         return False
+    if hires_reference_encode_size > 0:
+        return True
     if lora_selections_differ(select_loras_for_stage(extra_loras, "main"),
                               select_loras_for_stage(extra_loras, "hires")):
         return True

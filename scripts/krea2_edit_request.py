@@ -56,9 +56,10 @@ def krea2_edit_references(params: dict) -> list[dict]:
 def krea2_edit_reference_fit_mode(params: dict) -> str:
     """How a reference is made to fit the target: 'fit' or 'crop'.
 
-    'fit' resamples the reference aspect-preserving, caps it to the target grid
-    and centres it on the target; 'crop' centre-crops to the target aspect ratio
-    and anchors at the origin. The identity-edit LoRA was trained on 'fit'.
+    Both modes resample the reference aspect-preserving; neither crops it. 'fit'
+    additionally caps the reference's latent grid to the target grid and centres
+    its RoPE positions on the target; 'crop' skips the cap and anchors positions
+    at the origin. The identity-edit LoRA was trained on 'fit'.
     An unrecognised value falls back to the default rather than being sent on,
     since the runtime would only warn and ignore it.
     """
@@ -68,10 +69,16 @@ def krea2_edit_reference_fit_mode(params: dict) -> str:
     return requested_fit_mode
 
 
-def build_krea2_edit_ref_image_args(params: dict) -> str:
+def build_krea2_edit_ref_image_args(params: dict, reference_encode_size: int = 0) -> str:
     """The reference-image args: preset, VLM grounding size, fit mode, fidelity.
 
     The default fit mode is omitted so the preset's own geometry stands.
+
+    `reference_encode_size` is an edge length, sent as the N*N pixel area the
+    runtime budgets for encoding each reference. Zero leaves the preset's own
+    budget in place. Reference tokens join the target's in one attention
+    sequence whose cost grows with the square of that total, so shrinking
+    references is what makes room at a large hires target.
 
     ref_boost is repeated once per reference, in reference order, because the
     runtime's key=value parser splits on both ',' and ';' and so cannot carry a
@@ -82,6 +89,8 @@ def build_krea2_edit_ref_image_args(params: dict) -> str:
     grounding_pixels = int(params.get("grounding_px", DEFAULT_GROUNDING_PIXELS))
     if grounding_pixels > 0:
         arguments.append(f"vlm_size={grounding_pixels}")
+    if reference_encode_size > 0:
+        arguments.append(f"vae_input_max_pixels={reference_encode_size * reference_encode_size}")
     fit_mode = krea2_edit_reference_fit_mode(params)
     if fit_mode != DEFAULT_REFERENCE_FIT_MODE:
         arguments.append(f"fit_mode={fit_mode}")
@@ -126,7 +135,7 @@ def krea2_edit_payload_fields(
     }
 
 
-def krea2_edit_native_args_fields(params: dict) -> dict:
+def krea2_edit_native_args_fields(params: dict, reference_encode_size: int = 0) -> dict:
     """Fields for the native sd_cpp_extra_args block; empty when edit mode is off.
 
     `ref_image_args` is a native generation parameter. The compatibility
@@ -135,4 +144,4 @@ def krea2_edit_native_args_fields(params: dict) -> dict:
     """
     if not is_krea2_edit_enabled(params):
         return {}
-    return {"ref_image_args": build_krea2_edit_ref_image_args(params)}
+    return {"ref_image_args": build_krea2_edit_ref_image_args(params, reference_encode_size)}

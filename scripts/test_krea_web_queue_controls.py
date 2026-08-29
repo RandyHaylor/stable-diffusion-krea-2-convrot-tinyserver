@@ -380,6 +380,59 @@ def main() -> int:
     check("plain img2img sends the source only as an init image",
           "init_images" in plain_img2img_request and "extra_images" not in plain_img2img_request,
           f"keys={sorted(plain_img2img_request)}")
+    plain_img2img_native = json.loads(plain_img2img_request["prompt"]
+                                      .split("<sd_cpp_extra_args>", 1)[1].split("</sd_cpp_extra_args>", 1)[0])
+    check("the img2img noise multiplier travels inside the native sample args, not a top-level field",
+          "img2img_noise_multiplier=1"
+          in plain_img2img_native["sample_params"].get("extra_sample_args", "")
+          and "extra_sample_args" not in plain_img2img_request,
+          f"extra_sample_args={plain_img2img_native['sample_params'].get('extra_sample_args')!r}")
+
+    untagged_job = next(j for j in client.get("/api/state", headers=session_headers).json()["history"]
+                        if (j["params"] or {}).get("prompt") == "img2img-plain")
+    check("a run that consumes no tags records an empty tag list rather than omitting it",
+          untagged_job["params"].get("wd14_tags") == [],
+          f"wd14_tags={untagged_job['params'].get('wd14_tags')!r}")
+
+    unconsumed_tag_params = build_job_params("img2img-tag-source-unconsumed")
+    unconsumed_tag_params["source_image"] = uploaded_source["name"]
+    unconsumed_tag_params["img2img_denoise"] = 0.75
+    unconsumed_tag_params["img2img_wd14_tag"] = True
+    client.post("/api/jobs", json={"params": unconsumed_tag_params}, headers=session_headers)
+    unconsumed_tag_job = wait_until(
+        lambda: next((j for j in client.get("/api/state", headers=session_headers).json()["history"]
+                      if (j["params"] or {}).get("prompt") == "img2img-tag-source-unconsumed"
+                      and j["status"] == "completed"), None),
+        20, "img2img-tag-source-unconsumed job to complete")
+    check("ticking the source tag box alone never loads the tagger, since nothing consumes it",
+          unconsumed_tag_job["params"].get("wd14_tags") == [],
+          "the main stage is not appending tags and the hires stage is off")
+    check("an unconsumed source tag box leaves the prompt exactly as typed",
+          find_generation_request_for_prompt("img2img-tag-source-unconsumed")["prompt"]
+          .startswith("img2img-tag-source-unconsumed <sd_cpp_extra_args>"),
+          "no tags may be appended when no stage asked for them")
+
+    noisy_img2img_params = build_job_params("img2img-noise-multiplier")
+    noisy_img2img_params["source_image"] = uploaded_source["name"]
+    noisy_img2img_params["img2img_denoise"] = 0.75
+    noisy_img2img_params["img2img_noise_multiplier"] = 1.4
+    client.post("/api/jobs", json={"params": noisy_img2img_params}, headers=session_headers)
+    wait_until(lambda: next((j for j in client.get("/api/state", headers=session_headers).json()["history"]
+                             if (j["params"] or {}).get("prompt") == "img2img-noise-multiplier"
+                             and j["status"] == "completed"), None),
+               20, "img2img-noise-multiplier job to complete")
+    noisy_img2img_native = json.loads(find_generation_request_for_prompt("img2img-noise-multiplier")["prompt"]
+                                      .split("<sd_cpp_extra_args>", 1)[1].split("</sd_cpp_extra_args>", 1)[0])
+    check("an img2img noise multiplier above 1 reaches the runtime unclamped",
+          "img2img_noise_multiplier=1.4"
+          in noisy_img2img_native["sample_params"].get("extra_sample_args", ""),
+          f"extra_sample_args={noisy_img2img_native['sample_params'].get('extra_sample_args')!r}")
+
+    txt2img_native = json.loads(find_generation_request_for_prompt("first")["prompt"]
+                                .split("<sd_cpp_extra_args>", 1)[1].split("</sd_cpp_extra_args>", 1)[0])
+    check("a run with no img2img source sends no img2img noise multiplier at all",
+          "img2img_noise_multiplier" not in txt2img_native["sample_params"].get("extra_sample_args", ""),
+          f"extra_sample_args={txt2img_native['sample_params'].get('extra_sample_args')!r}")
 
     referenced_source_params = build_job_params("img2img-source-as-reference")
     referenced_source_params["source_image"] = uploaded_source["name"]
@@ -464,6 +517,10 @@ def main() -> int:
     check("the second stage carries the hires prompt appended to the main prompt",
           varying_requests[1]["prompt"].startswith("hires-varying-settings, sharp focus"),
           f"prompt={varying_requests[1]['prompt'][:70]!r}")
+    check("the second stage leaves the upscaled latent unnoised by the img2img path",
+          "img2img_noise_multiplier=0"
+          in second_stage_native["sample_params"].get("extra_sample_args", ""),
+          f"extra_sample_args={second_stage_native['sample_params'].get('extra_sample_args')!r}")
     check("the second stage renders at the hires resolution",
           varying_requests[1]["width"] == varying_hires_params["hires_width"]
           and varying_requests[1]["height"] == varying_hires_params["hires_height"],
@@ -486,6 +543,27 @@ def main() -> int:
     check("the hires block carries a noise multiplier, defaulting to 1",
           matching_native["hires"].get("noise_multiplier") == 1.0,
           f"hires={matching_native['hires']}")
+
+    save_lowres_params = build_job_params("hires-save-lowres")
+    save_lowres_params["hires"] = True
+    save_lowres_params["save_lowres"] = True
+    client.post("/api/jobs", json={"params": save_lowres_params}, headers=session_headers)
+    wait_until(lambda: next((j for j in client.get("/api/state", headers=session_headers).json()["history"]
+                             if (j["params"] or {}).get("prompt") == "hires-save-lowres"
+                             and j["status"] == "completed"), None),
+               30, "hires-save-lowres job to complete")
+    save_lowres_requests = find_all_generation_requests_for_prompt("hires-save-lowres")
+    check("saving the low-res image does not render the base pass twice",
+          len(save_lowres_requests) == 1,
+          f"requests={len(save_lowres_requests)}; the runtime returns the pre-upscale image itself")
+    save_lowres_native = json.loads(save_lowres_requests[0]["prompt"]
+                                    .split("<sd_cpp_extra_args>", 1)[1].split("</sd_cpp_extra_args>", 1)[0])
+    check("the request asks the runtime for the pre-upscale image",
+          save_lowres_native["hires"].get("return_lowres_image") is True,
+          f"hires={save_lowres_native.get('hires')}")
+    check("a hires run that is not saving the low-res does not ask for it",
+          matching_native["hires"].get("return_lowres_image") is not True,
+          f"hires={matching_native.get('hires')}")
 
     noisy_hires_params = build_job_params("hires-noise-multiplier")
     noisy_hires_params["hires"] = True
@@ -558,7 +636,8 @@ def main() -> int:
     if available_loras:
         selected_lora_filename = available_loras[0]["filename"]
         selected_lora_params = build_job_params("selected-loras")
-        selected_lora_params["extra_loras"] = [{"filename": selected_lora_filename, "strength": 0.8}]
+        selected_lora_params["extra_loras"] = [{"filename": selected_lora_filename, "strength": 0.8,
+                                                "use_in_main": True, "use_in_hires": True}]
         client.post("/api/jobs", json={"params": selected_lora_params}, headers=session_headers)
         wait_until(lambda: next((j for j in client.get("/api/state", headers=session_headers).json()["history"]
                                  if (j["params"] or {}).get("prompt") == "selected-loras"
@@ -581,13 +660,37 @@ def main() -> int:
         check("unselected loras are not sent to the backend",
               "lora" not in unselected_request, f"keys={sorted(unselected_request)}")
 
+    check("unloading models needs authentication",
+          client.post("/api/unload-models").status_code == 401)
+
+    recorded_subprocess_calls: list[list[str]] = []
+    real_subprocess_run = krea_web.subprocess.run
+    krea_web.subprocess.run = lambda command, **kwargs: recorded_subprocess_calls.append(list(command))
+    try:
+        unload_response = client.post("/api/unload-models", headers=session_headers)
+    finally:
+        krea_web.subprocess.run = real_subprocess_run
+    check("unloading models stops the server so its VRAM is released",
+          unload_response.status_code == 200
+          and any(call[-1] == "stop" and call[0].endswith("krea-server.sh")
+                  for call in recorded_subprocess_calls),
+          f"calls={recorded_subprocess_calls}")
+    check("unloading forgets the loaded checkpoint so the next job reloads it",
+          app.state.queue_manager.loaded_checkpoint == "" and unload_response.json()["model"] == "",
+          f"loaded_checkpoint={app.state.queue_manager.loaded_checkpoint!r}")
+
+    app.state.queue_manager.current = "pretend-running-job"
+    try:
+        busy_unload_status = client.post("/api/unload-models", headers=session_headers).status_code
+    finally:
+        app.state.queue_manager.current = None
+    check("unloading is refused while a job is running",
+          busy_unload_status == 409,
+          "pulling weights out from under a running generation would fail it")
+
     check("logout invalidates the token immediately",
           client.post("/api/logout", headers=session_headers).status_code == 200
           and client.get("/api/state", headers=session_headers).status_code == 401)
-
-    for cleanup_name in list(krea_web.OUTPUT_DIR.glob("krea-web*")):
-        if third_job["id"] in cleanup_name.name:
-            cleanup_name.unlink()
 
     stub_server.shutdown()
     print()
@@ -598,5 +701,20 @@ def main() -> int:
     return 0
 
 
+def run_main_with_a_disposable_output_directory() -> int:
+    """Keep the suite's uploads and stub renders out of the real outputs folder.
+
+    The queue checks post through the real upload and save routes, so without
+    this every run would leave stub images behind for the user to sift out.
+    """
+    original_output_dir = krea_web.OUTPUT_DIR
+    with tempfile.TemporaryDirectory() as disposable_output_directory:
+        krea_web.OUTPUT_DIR = Path(disposable_output_directory)
+        try:
+            return main()
+        finally:
+            krea_web.OUTPUT_DIR = original_output_dir
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(run_main_with_a_disposable_output_directory())

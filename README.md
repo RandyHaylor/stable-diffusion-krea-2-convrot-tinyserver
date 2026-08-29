@@ -104,6 +104,73 @@ one conditional model evaluation at each active sampling step. It combines with
 CFG as `cfg_prediction + pag_scale * (conditional - perturbed)` and is
 deliberately disabled for the native hires refinement stage.
 
+### Krea2 Edit references
+
+Edit mode is instruction-based editing, not img2img: the target starts as pure
+noise and the references condition it by two paths at once, VAE latent tokens for
+appearance and Qwen3-VL vision tokens for semantics. Enabling edit mode therefore
+takes precedence over an img2img source image, which is ignored for that request.
+
+Reference order is meaningful — the identity-edit LoRA was trained scene first,
+subject second. Each reference carries its own **fidelity**, which multiplies how
+hard the target attends to it. Any fidelity other than exactly 1 makes the runtime
+build a dense attention mask sized by the square of the whole sequence; at a large
+hires target that costs hundreds of MB of VRAM, and the UI marks such a reference
+`(extra VRAM)`. Exactly 1 skips the mask entirely.
+
+**Reference fit mode** is `fit` or `crop`. Neither crops or squashes the image —
+references are always resampled aspect-preserving. `fit` additionally caps the
+reference's latent grid to the target grid and centres its RoPE positions on the
+target; `crop` skips the cap and anchors positions at the origin. The
+identity-edit LoRA was trained on `fit`.
+
+### WD14 tagging
+
+Ticking **tag** on a Krea2 Edit reference, or **Tag source with WD14** on an
+img2img source, selects *which* images are read. A stage then has to ask for the
+result: **Append WD14 tags** feeds them to the main prompt, and the hires tag
+source can take them independently. When no stage consumes them the checkboxes
+show `(unused)` and the tagger is never loaded or run. The tags a request actually
+used are recorded in the job details and in the saved PNG.
+
+The tagger is WD ViT v3 (`models/wd14/`, gitignored), pinned to the CPU execution
+provider so it never competes for diffusion VRAM. It degrades to "no tags" rather
+than failing a generation when the model files are absent.
+
+### Hires staging
+
+Each LoRA has independent **main** and **hires** checkboxes, so a LoRA can apply
+to either stage or both — turbo on the low-res pass alone, for example.
+
+A request carries one LoRA selection, one prompt and one `ref_image_args`, shared
+by both stages. So a differing LoRA selection, a hires prompt or negative prompt,
+a hires tag source other than `none`, or a **Hires reference size** other than
+`auto` all force the hires stage to run as its own request. That reloads weights
+and gives up the latent continuity of the native in-request hires path, so the UI
+warns with "Hires setting variation causing additional model load time".
+
+**Hires reference size** is an edge length; the runtime budgets that many pixels
+squared when encoding each Krea2 Edit reference for the hires pass only. Reference
+tokens share one attention sequence with the target and the compute buffer grows
+with the square of the total, so shrinking references is what makes room at a
+large hires target. At 1248×1824 a full-budget reference is roughly 4000 of about
+13000 tokens.
+
+**Get vision data from lowres for hires pass** runs the low-res stage first and
+lets the vision tower read its output. That image reaches the VLM only, never the
+DiT — attaching it as a reference latent as well is what used to exhaust VRAM on
+1024→1536 runs.
+
+### img2img
+
+**Img2img noise multiplier** scales the noise mixed into the encoded source,
+independently of the denoise strength. Denoise still picks where the sampler
+starts and how many steps it takes; the multiplier scales only the sigma used to
+build the starting latent, so the two deliberately disagree. 1 is the consistent
+default, 0 leaves the source untouched, and the value is uncapped above 1. Note
+that the flow denoiser mixes as `source·(1−σ) + noise·σ`, so σ above 1 inverts the
+source term — values much above 1 are a different regime, not simply more noise.
+
 Generation is serialized through a single worker: one request runs at a time
 and the rest wait. The controls are **Queue generation**, **Queue in front**,
 per-job **Remove**, **Clear waiting**, **Kill current**, and **Kill all**
@@ -135,8 +202,11 @@ patch in `src/model_io/safetensors_io.cpp`. The underlying I8 weights,
 per-output-row scales, ConvRot flag, and H256 group size are unchanged.
 
 `patches/stable-diffusion-cpp-int8-rowwise.patch` carries that alias, the
-`/sdcpp/v1/cancel` endpoint, and the Krea 2 PAG runtime/API extension. Regenerate
-it from the vendor tree rather than editing it by hand:
+`/sdcpp/v1/cancel` endpoint, the Krea 2 PAG runtime/API extension, the Krea2 edit
+reference geometry (centred RoPE positions, `fit_mode`, `ref_boost`), the
+`img2img_noise_multiplier` and hires `noise_multiplier` sample args, and a skip of
+the reference VAE encode when the references never reach the DiT. Regenerate it
+from the vendor tree rather than editing it by hand:
 
 ```bash
 git -C vendor/stable-diffusion.cpp diff > patches/stable-diffusion-cpp-int8-rowwise.patch

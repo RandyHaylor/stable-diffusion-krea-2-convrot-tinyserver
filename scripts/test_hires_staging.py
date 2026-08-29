@@ -88,6 +88,12 @@ def main() -> int:
           hires_settings_vary_from_main(True, [both_stages], hires_tag_source="stage_one"))
     check("the reference tag source also makes the settings vary",
           hires_settings_vary_from_main(True, [both_stages], hires_tag_source="reference_images"))
+    check("a hires reference encode size makes the settings vary",
+          hires_settings_vary_from_main(True, [both_stages], hires_reference_encode_size=512),
+          "one request carries one ref_image_args, so shrinking references needs its own request")
+    check("an auto reference encode size keeps the native path",
+          not hires_settings_vary_from_main(True, [both_stages], hires_reference_encode_size=0))
+
     check("blank overrides and a none tag source keep the native path",
           not hires_settings_vary_from_main(True, [both_stages], hires_prompt="   ",
                                            hires_negative_prompt="", hires_tag_source="none"),

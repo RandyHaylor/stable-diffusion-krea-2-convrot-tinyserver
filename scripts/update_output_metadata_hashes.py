@@ -204,7 +204,9 @@ def repair_resource_hashes(payload: dict, ui_params: dict,
         lora_hashes.append(f"{name}:{lora_hash}")
         hashes[f"lora:{name}"] = lora_hash
         resources.append({"type": "lora", "name": name, "hash": lora_hash, "weight": strength})
-        normalized_loras.append({"filename": lora_path.name, "strength": strength})
+        normalized_loras.append({"filename": lora_path.name, "strength": strength,
+                                 "use_in_main": selected.get("use_in_main", True),
+                                 "use_in_hires": selected.get("use_in_hires", True)})
         backend_loras.append({"path": lora_path.name, "multiplier": strength, "is_high_noise": False})
         repaired += 1
 
