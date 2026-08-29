@@ -6,6 +6,9 @@ MODEL_ROOT="${KREA_MODEL_ROOT:-${ROOT_DIR}/models}"
 SERVER="${SD_SERVER:-${ROOT_DIR}/vendor/stable-diffusion.cpp/build/bin/sd-server}"
 DIT="${KREA_DIT:-${MODEL_ROOT}/chkpt/krea2RawBaseInt8Row_v10.safetensors}"
 LLM="${KREA_LLM:-${MODEL_ROOT}/text/Qwen3VL-4B-Instruct-Q4_K_M.gguf}"
+# Krea2 Edit conditions references through the VLM as well as the VAE; without the
+# vision tower the runtime silently drops the semantic half of that conditioning.
+VIT="${KREA_VIT:-${MODEL_ROOT}/vit/Qwen3-VL-4B-Instruct-abliterated.mmproj-Q8_0.gguf}"
 VAE="${KREA_VAE:-${MODEL_ROOT}/vae/qwen_image_vae.safetensors}"
 # Keep the server's LoRA cache aligned with the web UI's canonical directory.
 LORA_DIR="${ROOT_DIR}/models/loras"
@@ -30,7 +33,7 @@ case "${1:-status}" in
             exit 0
         fi
         mkdir -p "$RUNTIME_DIR"
-        for required in "$SERVER" "$DIT" "$LLM" "$VAE"; do
+        for required in "$SERVER" "$DIT" "$LLM" "$VIT" "$VAE"; do
             [[ -f "$required" ]] || { echo "missing required file: $required" >&2; exit 1; }
         done
         printf '\n[%s] Starting checkpoint: %s\n' "$(date --iso-8601=seconds)" "$DIT" >>"$LOG_FILE"
@@ -40,6 +43,7 @@ case "${1:-status}" in
             --listen-port "$PORT" \
             --diffusion-model "$DIT" \
             --llm "$LLM" \
+            --llm_vision "$VIT" \
             --vae "$VAE" \
             --lora-model-dir "$LORA_DIR" \
             --diffusion-fa \

@@ -11,7 +11,7 @@ from io import BytesIO
 from pathlib import Path
 
 from fastapi import HTTPException
-from PIL import Image
+from PIL import Image, PngImagePlugin
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import krea_web  # noqa: E402
@@ -65,7 +65,8 @@ def main() -> int:
     manager = object.__new__(krea_web.QueueManager)
     observed_seeds: list[int] = []
     manager.run_single_backend_generation = (
-        lambda params, hires, prefix: observed_seeds.append(params["seed"]) or []
+        lambda params, hires, prefix, reference_image_names=None:
+            observed_seeds.append(params["seed"]) or []
     )
     params = {"seed": -1, "checkpoint": "", "hires": False}
     manager.generate_job_outputs({"id": "seed-test", "params": params, "cancel_requested": False})
@@ -126,6 +127,17 @@ def main() -> int:
                        "extra_images": [bulky_base64_image, bulky_base64_image],
                        "ui_params": {"seed": 1}})) < 100_000,
                   "a PNG with large references stays small instead of embedding them")
+
+            foreign_workflow_image = Image.open(BytesIO(png_bytes()))
+            foreign_metadata = PngImagePlugin.PngInfo()
+            foreign_metadata.add_text("prompt", json.dumps(
+                {"83": {"class_type": "DPRandomGenerator", "is_changed": [float("nan")]}}))
+            foreign_workflow_path = krea_web.OUTPUT_DIR / "comfyui-export.png"
+            foreign_workflow_image.save(foreign_workflow_path, pnginfo=foreign_metadata)
+            with Image.open(foreign_workflow_path) as saved_foreign_image:
+                foreign_params, _, _ = krea_web.read_generation_metadata(saved_foreign_image)
+            check(json.dumps(foreign_params, allow_nan=False) is not None,
+                  "metadata from a foreign workflow stays JSON-serializable")
         finally:
             krea_web.OUTPUT_DIR = original_output_dir
     return 0

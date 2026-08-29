@@ -114,6 +114,11 @@ def find_generation_request_for_prompt(prompt: str) -> dict:
     raise AssertionError(f"no backend generation request was sent for prompt {prompt!r}")
 
 
+def find_all_generation_requests_for_prompt(prompt: str) -> list[dict]:
+    return [request_body for request_body in stub_state["generation_requests"]
+            if request_body["prompt"].startswith(prompt)]
+
+
 def wait_until(condition, timeout_seconds: float, description: str):
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
@@ -357,6 +362,95 @@ def main() -> int:
           krea2_edit_crop_native_args.get("ref_image_args")
           == "preset=krea2_edit,vlm_size=768,fit_mode=crop",
           f"ref_image_args={krea2_edit_crop_native_args.get('ref_image_args')!r}")
+
+    uploaded_source = client.post("/api/source-image",
+                                  content=base64.b64decode(ONE_PIXEL_PNG_BASE64),
+                                  headers={**session_headers,
+                                           "Content-Type": "image/png",
+                                           "X-Filename": "img2img-source.png"}).json()
+    plain_img2img_params = build_job_params("img2img-plain")
+    plain_img2img_params["source_image"] = uploaded_source["name"]
+    plain_img2img_params["img2img_denoise"] = 0.75
+    client.post("/api/jobs", json={"params": plain_img2img_params}, headers=session_headers)
+    wait_until(lambda: next((j for j in client.get("/api/state", headers=session_headers).json()["history"]
+                             if (j["params"] or {}).get("prompt") == "img2img-plain"
+                             and j["status"] == "completed"), None),
+               20, "img2img-plain job to complete")
+    plain_img2img_request = find_generation_request_for_prompt("img2img-plain")
+    check("plain img2img sends the source only as an init image",
+          "init_images" in plain_img2img_request and "extra_images" not in plain_img2img_request,
+          f"keys={sorted(plain_img2img_request)}")
+
+    referenced_source_params = build_job_params("img2img-source-as-reference")
+    referenced_source_params["source_image"] = uploaded_source["name"]
+    referenced_source_params["img2img_denoise"] = 0.75
+    referenced_source_params["img2img_use_vision_on_source"] = True
+    client.post("/api/jobs", json={"params": referenced_source_params}, headers=session_headers)
+    wait_until(lambda: next((j for j in client.get("/api/state", headers=session_headers).json()["history"]
+                             if (j["params"] or {}).get("prompt") == "img2img-source-as-reference"
+                             and j["status"] == "completed"), None),
+               20, "img2img-source-as-reference job to complete")
+    referenced_source_request = find_generation_request_for_prompt("img2img-source-as-reference")
+    check("the source image is sent as a reference as well as an init image when requested",
+          referenced_source_request.get("extra_images") == referenced_source_request.get("init_images"),
+          f"extra_images count={len(referenced_source_request.get('extra_images', []))}")
+    check("sending the source as a reference keeps img2img rather than becoming an edit",
+          "denoising_strength" in referenced_source_request
+          and stub_state["generation_paths"][-1] == "/sdapi/v1/img2img",
+          f"path={stub_state['generation_paths'][-1]}")
+
+    hires_reference_params = build_job_params("hires-lowres-reference")
+    hires_reference_params["hires"] = True
+    hires_reference_params["save_lowres"] = False
+    hires_reference_params["hires_use_vision_on_lowres"] = True
+    client.post("/api/jobs", json={"params": hires_reference_params}, headers=session_headers)
+    wait_until(lambda: next((j for j in client.get("/api/state", headers=session_headers).json()["history"]
+                             if (j["params"] or {}).get("prompt") == "hires-lowres-reference"
+                             and j["status"] == "completed"), None),
+               30, "hires-lowres-reference job to complete")
+    hires_reference_requests = find_all_generation_requests_for_prompt("hires-lowres-reference")
+    check("using the low-res pass as a reference forces the low-res generation to run",
+          len(hires_reference_requests) == 2,
+          f"request count={len(hires_reference_requests)}")
+    lowres_native_args = json.loads(hires_reference_requests[0]["prompt"]
+                                    .split("<sd_cpp_extra_args>", 1)[1].split("</sd_cpp_extra_args>", 1)[0])
+    check("the low-res pass itself carries no reference and no hires block",
+          "extra_images" not in hires_reference_requests[0] and "hires" not in lowres_native_args,
+          f"keys={sorted(hires_reference_requests[0])} native={sorted(lowres_native_args)}")
+    check("the hires pass receives exactly one reference, the low-res result",
+          len(hires_reference_requests[1].get("extra_images", [])) == 1,
+          f"extra_images count={len(hires_reference_requests[1].get('extra_images', []))}")
+
+    plain_hires_params = build_job_params("hires-without-reference")
+    plain_hires_params["hires"] = True
+    plain_hires_params["save_lowres"] = False
+    client.post("/api/jobs", json={"params": plain_hires_params}, headers=session_headers)
+    wait_until(lambda: next((j for j in client.get("/api/state", headers=session_headers).json()["history"]
+                             if (j["params"] or {}).get("prompt") == "hires-without-reference"
+                             and j["status"] == "completed"), None),
+               30, "hires-without-reference job to complete")
+    plain_hires_requests = find_all_generation_requests_for_prompt("hires-without-reference")
+    check("hires without the option runs once and sends no reference",
+          len(plain_hires_requests) == 1 and "extra_images" not in plain_hires_requests[0],
+          f"request count={len(plain_hires_requests)}")
+
+    served_page = client.get("/").text
+
+    def input_tag_for_field(field_id: str) -> str:
+        start = served_page.index(f'id="{field_id}"')
+        return served_page[start:served_page.index(">", start)]
+
+    check("the login password field is declared as an existing password, not a new one",
+          'autocomplete="current-password"' in input_tag_for_field("loginPassword")
+          and "new-password" not in served_page,
+          "new-password makes browsers offer to generate and store a fresh credential")
+    check("the login username field is declared as a username",
+          'autocomplete="username"' in input_tag_for_field("loginUser"))
+    unguarded_fields = [field_id for field_id in ("negative_prompt", "extra_sample_args", "pag_layers")
+                        if 'autocomplete="off"' not in input_tag_for_field(field_id)]
+    check("generation text fields opt out of autofill so browsers stop guessing them",
+          not unguarded_fields,
+          f"unguarded={unguarded_fields}")
 
     check_server_log_tail_reader(check)
     check("server log endpoint requires authentication",

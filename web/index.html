@@ -137,12 +137,12 @@ button.danger{background:#49252a;border-color:#813942}
 </style></head><body>
 
 <div id="loginGate">
-  <form id="loginForm" autocomplete="off">
+  <form id="loginForm">
     <h2>Krea Tinyserver</h2>
     <label for="loginUser">Username</label>
-    <input id="loginUser" value="krea" autocomplete="off">
+    <input id="loginUser" name="username" value="krea" autocomplete="username">
     <label for="loginPassword">Password</label>
-    <input id="loginPassword" type="password" autocomplete="new-password">
+    <input id="loginPassword" name="password" type="password" autocomplete="current-password">
     <div id="loginError"></div>
     <button type="submit" style="margin-top:10px">Log in</button>
   </form>
@@ -194,7 +194,7 @@ button.danger{background:#49252a;border-color:#813942}
   <textarea id="prompt" placeholder="Describe the image..."></textarea>
 
   <label for="negative_prompt">Negative prompt</label>
-  <input id="negative_prompt" value="">
+  <input id="negative_prompt" value="" autocomplete="off">
 
   <div class="fields two">
     <div><label for="resolution">Resolution</label><div class="combo" data-field="resolution"></div></div>
@@ -218,7 +218,7 @@ button.danger{background:#49252a;border-color:#813942}
   </div>
 
   <label for="extra_sample_args">Extra sample args</label>
-  <input id="extra_sample_args" value="">
+  <input id="extra_sample_args" value="" autocomplete="off">
 
   <h2>Pag attention guidance (main stage only)</h2>
   <div class="checks">
@@ -226,7 +226,7 @@ button.danger{background:#49252a;border-color:#813942}
   </div>
   <div class="fields">
     <div><label for="pag_scale">PAG scale</label><div class="combo" data-field="pag_scale"></div></div>
-    <div><label for="pag_layers">Transformer layers</label><input id="pag_layers" value="7" placeholder="7 or 7,8,9"></div>
+    <div><label for="pag_layers">Transformer layers</label><input id="pag_layers" value="7" autocomplete="off" placeholder="7 or 7,8,9"></div>
   </div>
   <div class="fields two">
     <div><label for="pag_start">PAG start</label><div class="combo" data-field="pag_start"></div></div>
@@ -236,6 +236,7 @@ button.danger{background:#49252a;border-color:#813942}
   <div class="checks">
     <label><input id="hires" type="checkbox"> Hires pass</label>
     <label><input id="save_lowres" type="checkbox"> Save low-res too</label>
+    <label title="Runs the low-res pass first so the vision model can read it. Also adds the low-res image as a DiT reference, which costs VRAM at high hires targets."><input id="hires_use_vision_on_lowres" type="checkbox"> Use vision on low-res</label>
   </div>
 
   <h2 style="margin-top:16px">LoRAs</h2>
@@ -289,6 +290,7 @@ button.danger{background:#49252a;border-color:#813942}
         <span id="selectedSourceName"></span>
         <span id="selectedSourceResolution"></span>
         <button type="button" onclick="chooseSourceImage()">Load source image</button>
+        <label class="source-choice-radio" title="Lets the vision model read the source image; Krea2 never shows it the init image on its own. Also adds the source as a DiT reference, which costs VRAM."><input id="img2img_use_vision_on_source" type="checkbox"> Use vision on source</label>
         <input id="sourceImageFile" type="file" accept="image/png,image/jpeg,.png,.jpg,.jpeg" hidden>
       </div>
     </div>
@@ -539,7 +541,7 @@ function addKrea2EditReferencePanel(filename = '', referenceFidelity = RECOMMEND
       `<div class="krea2edit-reference-actions">` +
         `<button type="button" class="krea2edit-reference-load">Load image</button>` +
         `<label class="krea2edit-reference-boost">fidelity` +
-          `<input type="number" class="krea2edit-reference-boost-input" value="${referenceFidelity}" step="0.5" min="0">` +
+          `<input type="number" class="krea2edit-reference-boost-input" value="${referenceFidelity}" step="0.5" min="0" autocomplete="off">` +
         `</label>` +
         `<button type="button" class="krea2edit-reference-remove">Remove</button>` +
       `</div>` +
@@ -689,7 +691,7 @@ function renderLoraList(loras){
       `<input type="checkbox" id="loraEnabled${index}" data-filename="${escapeHtml(lora.filename)}">` +
       `<span class="loraname" title="${escapeHtml(lora.filename)}">${escapeHtml(lora.name)}</span>` +
       `<span class="lorasize">${lora.size_mb} MB</span>` +
-      `<input type="number" id="loraStrength${index}" value="1" step="0.05">` +
+      `<input type="number" id="loraStrength${index}" value="1" step="0.05" autocomplete="off">` +
     `</div>`
   ).join('');
 }
@@ -715,7 +717,9 @@ function collectParams(){
     hires: $('hires').checked,
     pag_enabled: $('pag_enabled').checked,
     save_lowres: $('save_lowres').checked,
+    hires_use_vision_on_lowres: $('hires_use_vision_on_lowres').checked,
     source_image: selectedSourceImage,
+    img2img_use_vision_on_source: $('img2img_use_vision_on_source').checked,
     krea2_edit_enabled: $('krea2_edit_enabled').checked,
     krea2_edit_references: collectKrea2EditReferences(),
     extra_loras: collectSelectedLoras(),
@@ -764,11 +768,14 @@ function formatJobDetails(params){
     ['Img2img source', generationType === 'img2img' ? (p.source_image || '') : ''],
     ['Img2img denoise', generationType === 'img2img' ? (p.img2img_denoise ?? '') : ''],
     ['Img2img noise add', generationType === 'img2img' ? (p.img2img_noise_add ?? '') : ''],
+    ['Img2img vision on source',
+     generationType === 'img2img' && p.img2img_use_vision_on_source ? 'On' : ''],
     ['Hires pass', p.hires ? 'On' : 'Off'],
     ['Hires resolution', p.hires ? `${p.hires_width || ''}×${p.hires_height || ''}` : ''],
     ['Hires steps', p.hires ? (p.hires_steps ?? '') : ''],
     ['Denoise', p.hires ? (p.hires_denoise ?? '') : ''],
     ['Save low-res', p.save_lowres ? 'Yes' : 'No'],
+    ['Hires vision on low-res', p.hires && p.hires_use_vision_on_lowres ? 'On' : ''],
     ['VAE tile', p.vae_tile_size ?? ''],
   ];
   return details
@@ -847,6 +854,7 @@ function loadParamsIntoForm(p){
   });
   $('hires').checked = !!p.hires;
   $('save_lowres').checked = !!p.save_lowres;
+  $('hires_use_vision_on_lowres').checked = !!p.hires_use_vision_on_lowres;
   $('pag_enabled').checked = !!p.pag_enabled;
   if (p.checkpoint) $('checkpointSelect').value = p.checkpoint;
   document.querySelectorAll('#loraList .lorarow').forEach(row => {
@@ -858,6 +866,7 @@ function loadParamsIntoForm(p){
     if (selected) strength.value = selected.strength;
   });
   setSourceImage(p.source_image || '');
+  $('img2img_use_vision_on_source').checked = !!p.img2img_use_vision_on_source;
   $('krea2_edit_enabled').checked = !!p.krea2_edit_enabled;
   applyKrea2EditReferences(p.krea2_edit_references);
   window.scrollTo({top: 0, behavior: 'smooth'});

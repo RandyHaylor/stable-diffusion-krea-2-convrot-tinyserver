@@ -121,6 +121,9 @@ restart the server after rebuilding.
   (override with `KREA_DIT=`; `models/chkpt/krea-2-raw-int8-convrot.safetensors`
   is the previous checkpoint and still loads)
 - Text encoder: `models/text/Qwen3VL-4B-Instruct-Q4_K_M.gguf`
+- Vision tower: `models/vit/Qwen3-VL-4B-Instruct-abliterated.mmproj-Q8_0.gguf`
+  (override with `KREA_VIT=`; Krea2 Edit sends reference images to the VLM as
+  well as the VAE, and the semantic half is dropped without it)
 - VAE: `models/vae/qwen_image_vae.safetensors`
 - LoRAs: any `*.safetensors` in `models/loras`, selectable in the web UI
 - Runtime revision: `stable-diffusion.cpp` commit `50d640568388f876b0d63ee6ddb6bc86d997ec64`

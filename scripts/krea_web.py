@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import math
 import os
 import re
 import secrets
@@ -103,6 +104,23 @@ def save_source_image(image_bytes: bytes, requested_name: str) -> dict:
     return {"name": destination.name, "width": width, "height": height}
 
 
+def without_non_finite_floats(value):
+    """Replace NaN and Infinity with None, recursively.
+
+    Python's json module reads NaN and Infinity happily, but responses are
+    serialized with allow_nan=False. An image exported by another tool can carry
+    such a value in its embedded metadata, and one of them anywhere would
+    otherwise fail the entire output listing rather than that single entry.
+    """
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if isinstance(value, dict):
+        return {key: without_non_finite_floats(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [without_non_finite_floats(item) for item in value]
+    return value
+
+
 def read_generation_metadata(image: Image.Image) -> tuple[dict, str, dict]:
     """Read Krea generation settings, including legacy img2img outputs."""
     metadata: dict = {}
@@ -135,7 +153,8 @@ def read_generation_metadata(image: Image.Image) -> tuple[dict, str, dict]:
             "noise_add": metadata.get("img2img_noise_add", custom_img2img.get("noise_add", 0.0)),
         }
     metadata["generation_type"] = generation_type
-    return metadata, generation_type, custom_img2img
+    return (without_non_finite_floats(metadata), generation_type,
+            without_non_finite_floats(custom_img2img))
 
 
 def actual_seeds_from_backend_result(result: dict, image_count: int, fallback_seed: int) -> list[int]:
@@ -326,15 +345,24 @@ class QueueManager:
         if checkpoint:
             self.switch_checkpoint(checkpoint)
         outputs: list[str] = []
-        if p.get("hires") and p.get("save_lowres"):
-            outputs += self.run_single_backend_generation(p, hires=False, prefix=f"krea-web-lowres-{job['id']}")
+        lowres_reference_names: list[str] = []
+        # The hires pass can only be conditioned on the low-res result if that result
+        # exists as a file, so asking for it as a reference forces the low-res pass.
+        wants_lowres_reference = bool(p.get("hires") and p.get("hires_use_vision_on_lowres"))
+        if p.get("hires") and (p.get("save_lowres") or wants_lowres_reference):
+            lowres_outputs = self.run_single_backend_generation(p, hires=False, prefix=f"krea-web-lowres-{job['id']}")
+            outputs += lowres_outputs
+            if wants_lowres_reference:
+                lowres_reference_names = lowres_outputs[:1]
             if job["cancel_requested"]:
                 return outputs
         stage = "krea-web-highres" if p.get("hires") else "krea-web"
-        outputs += self.run_single_backend_generation(p, hires=bool(p.get("hires")), prefix=f"{stage}-{job['id']}")
+        outputs += self.run_single_backend_generation(p, hires=bool(p.get("hires")), prefix=f"{stage}-{job['id']}",
+                                                      reference_image_names=lowres_reference_names)
         return outputs
 
-    def run_single_backend_generation(self, p: dict, hires: bool, prefix: str) -> list[str]:
+    def run_single_backend_generation(self, p: dict, hires: bool, prefix: str,
+                                      reference_image_names: list[str] | None = None) -> list[str]:
         try:
             pag_layers = list(dict.fromkeys(
                 int(layer.strip()) for layer in str(p.get("pag_layers", "")).split(",") if layer.strip()
@@ -408,7 +436,13 @@ class QueueManager:
         source_name = "" if krea2_edit_fields else str(p.get("source_image", ""))
         payload.update(krea2_edit_fields)
         if source_name:
-            payload["init_images"] = [load_output_image_as_base64(source_name)]
+            source_image_base64 = load_output_image_as_base64(source_name)
+            payload["init_images"] = [source_image_base64]
+            # Krea2 conditions references through the VLM and the DiT, neither of
+            # which ever sees the init image; sending the source as a reference too
+            # is what gives those paths something to work from on an img2img run.
+            if p.get("img2img_use_vision_on_source"):
+                payload.setdefault("extra_images", []).append(source_image_base64)
             payload["denoising_strength"] = float(p.get("img2img_denoise", 0.0))
             noise_add = max(0.0, min(1.0, float(p.get("img2img_noise_add", 0.0))))
             extra_args = str(payload.get("extra_sample_args", "")).strip()
@@ -416,6 +450,8 @@ class QueueManager:
                 extra_args += ","
             payload["extra_sample_args"] = f"{extra_args}img2img_noise_add={noise_add:g}"
             endpoint = "/sdapi/v1/img2img"
+        for reference_name in (reference_image_names or []):
+            payload.setdefault("extra_images", []).append(load_output_image_as_base64(reference_name))
         result = self.post_json_to_backend(endpoint, payload, timeout=7200)
         images = result.get("images", [])
         if not images:
