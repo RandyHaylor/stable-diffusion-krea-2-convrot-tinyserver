@@ -179,7 +179,12 @@ def hires_tiling_hop_sizes(params: dict) -> list[tuple[int, int]]:
 
 
 HIRES_TILE_VISION_MODES = ("off", "on")
-DEFAULT_HIRES_TILE_VISION_MODE = "off"
+# On by default. It changes nothing on a subject whose every tile the prompt
+# already describes, and costs about 23% more time there, but on a subject whose
+# regions are unalike it is the difference between a tile of bare floor staying
+# floor and being repainted as a reflected copy of the whole room, which is what
+# a tile told about a window and an armchair it cannot see will invent.
+DEFAULT_HIRES_TILE_VISION_MODE = "on"
 NEUTRAL_HIRES_TILE_VISION_WEIGHT = 1.0
 
 

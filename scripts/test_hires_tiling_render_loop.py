@@ -139,8 +139,15 @@ def main() -> int:
           len(second_hop_sources) > 1,
           "tiles cut from a resampled earlier hop differ from one another")
 
-    check("tile vision is absent unless asked for",
-          all("vlm_images" not in payload for payload in backend.payloads),
+    check("tile vision is attached by default",
+          all(payload.get("vlm_images") == [payload["init_image"]]
+              for payload in backend.payloads),
+          "an unguided tile invents prompt content into regions without it")
+
+    _off_image, vision_off_backend = render_with_stubbed_backend(
+        job_params(hires_tile_vision="off"))
+    check("switching tile vision off attaches nothing",
+          all("vlm_images" not in payload for payload in vision_off_backend.payloads),
           "vision tokens cost sequence length in every tile")
 
     _vision_image, vision_backend = render_with_stubbed_backend(

@@ -158,11 +158,11 @@ def main() -> int:
               in (0.35, 0.6)
               for width in (900, 1200, 1536, 1664, 2432, 3328, 6000)),
           "no point between them has been measured, so none is claimed")
-    check("tile vision is off unless asked for",
-          not sends_each_hires_tile_to_the_vision_tower({}),
-          "it costs vision tokens in every tile's sequence")
-    check("tile vision engages when switched on",
-          sends_each_hires_tile_to_the_vision_tower({"hires_tile_vision": "on"}))
+    check("tile vision is on by default",
+          sends_each_hires_tile_to_the_vision_tower({}),
+          "an unguided tile invents the prompt's content into regions without it")
+    check("tile vision can be switched off",
+          not sends_each_hires_tile_to_the_vision_tower({"hires_tile_vision": "off"}))
     check("an unrecognised tile vision mode is treated as off",
           not sends_each_hires_tile_to_the_vision_tower({"hires_tile_vision": "maybe"}))
     check("the tile vision weight defaults to neutral",
@@ -177,7 +177,8 @@ def main() -> int:
           == "vlm_image_token_weight=0.5",
           f"got {hires_tile_vision_ref_image_args({'hires_tile_vision': 'on', 'hires_tile_vision_weight': 0.5})!r}")
     check("a weight with tile vision off sends nothing, having no tokens to weight",
-          hires_tile_vision_ref_image_args({"hires_tile_vision_weight": 0.5}) == "")
+          hires_tile_vision_ref_image_args({"hires_tile_vision": "off",
+                                            "hires_tile_vision_weight": 0.5}) == "")
 
     check("more hops do not raise the recommendation",
           recommended_maximum_hires_denoise_for_tiling(

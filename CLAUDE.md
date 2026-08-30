@@ -109,9 +109,15 @@ A tiled hires tile can be read by the vision tower, like the img2img source
       `vlm_images` too, so the repaint is conditioned on this tile's content
       rather than on a prompt written for the whole image
     - `hires_tile_vision_weight` scales those tokens via `vlm_image_token_weight`
-    - Off by default: measured NO gain on a homogeneous subject, at 23% more
-      time, because the prompt already described every tile. The case for it is a
-      heterogeneous image where one tile is all floor and another all sky.
+    - ON by default. A tile is conditioned on the prompt for the WHOLE image, so
+      a tile of nothing but floor is told the scene has a window and an armchair,
+      and at denoise 0.6 it paints them in as a reflection
+    - Measured: no gain on a homogeneous subject at 23% more time, but on a
+      heterogeneous one it is the difference between floor staying floor and
+      becoming a mirrored copy of the room
+      (`test-img/tile-vision-heterogeneous-comparison/`)
+    - Detail-energy metrics are BLIND to this: 2.027 against 2.051 for a
+      difference obvious by eye. An invented reflection is as sharp as a floor.
 
 Blending removes a seam step but cannot reconcile content
     - Independently refined neighbours disagree; cross-fading a disagreement
