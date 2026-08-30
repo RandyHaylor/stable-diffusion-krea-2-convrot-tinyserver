@@ -49,10 +49,23 @@ energy measures sharpness, and an invented reflection is just as sharp as a
 floor. This is the second time a number rated these runs wrongly; the first was a
 seam-steepness metric preferring a ghosted join. Judge tiling by looking.
 
-## Neither run is clean
+## Neither 0.6 run is clean, and the recommended denoise is
 
-Both still show artefacts in the floor, image 02 included. Both were run at
-denoise 0.6 with 16 tiles, which is above the 0.35 that
-`recommended_maximum_hires_denoise_for_tiling()` reports for a grid this
-crowded, so the residual is consistent with that guidance rather than a
-contradiction of it. A run at 0.35 has not been made on this subject.
+Images 01 and 02 both still show artefacts, because both ran at denoise 0.6 with
+16 tiles, above the 0.35 that
+`recommended_maximum_hires_denoise_for_tiling()` reports for a grid this crowded.
+
+`07-crop-FLOOR-1to1-vision-ON-denoise-0.35-CLEAN.png` is the same region at that
+recommended 0.35, everything else unchanged. It is clean: plain hardwood planks
+with visible grain and the faint reflection the base already had, no armchair, no
+mirrored room. So the guidance holds on the subject that broke at 0.6.
+
+The cost is softness, which is the real trade rather than a free win:
+
+| denoise | detail energy | floor |
+|---|---|---|
+| 0.6 | 2.051 | invents a reflected room |
+| 0.35 | 1.704 | clean |
+
+17% less measured detail for a structurally correct image. On a 16 tile grid that
+is the choice on offer; a less crowded grid can afford 0.6.

@@ -143,8 +143,11 @@ Ghosting guidance is keyed on tile count, and is thin
     - An earlier version keyed it on upscale factor. That did not survive
       testing: two hops each within a doubling still ghosted, so factor is not
       the variable
-    - All of it was measured at 6 steps without the identity-edit LoRA, so it is
-      probably pessimistic at 8 steps with it. Not re-measured.
+    - VALIDATED on a heterogeneous subject at 8 steps with the identity-edit
+      LoRA: a 16 tile grid at 0.6 invented a reflected room into a plain floor,
+      the same grid at the recommended 0.35 came back clean
+    - The cost is softness, not nothing: detail 1.704 at 0.35 against 2.051 at
+      0.6. A less crowded grid can afford the higher value.
 
 Judge tiling on the seam crops, not on seam metrics
     - A ghost is a smeared low-contrast region, and blur reads as a SHALLOW
