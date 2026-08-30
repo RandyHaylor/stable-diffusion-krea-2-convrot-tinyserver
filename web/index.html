@@ -434,6 +434,10 @@ function splitResolution(text){
   return [parts[0], parts[1]];
 }
 
+function joinResolution(width, height){
+  return width > 0 && height > 0 ? `${width}x${height}` : undefined;
+}
+
 let sessionToken = null;
 let selectedSourceImage = '';
 const outputCache = new Map();
@@ -956,6 +960,9 @@ function loadParamsIntoForm(p){
     use_in_main: true, use_in_hires: true,
   }));
   p.checkpoint = p.checkpoint || p.model_name;
+  // Params carry the two stages as width/height pairs; the combos take one string.
+  p.resolution = p.resolution ?? joinResolution(p.width, p.height);
+  p.hires_resolution = p.hires_resolution ?? joinResolution(p.hires_width, p.hires_height);
   p.prompt = p.prompt.replace(/\s*<sd_cpp_extra_args>[\s\S]*?<\/sd_cpp_extra_args>\s*$/, '');
   ['prompt','negative_prompt'].forEach(id => { if ($(id)) $(id).value = p[id] || ''; });
   $('extra_sample_args').value = p.extra_sample_args || p.krea_extra_sample_args || '';
