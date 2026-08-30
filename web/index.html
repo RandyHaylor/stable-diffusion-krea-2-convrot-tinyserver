@@ -105,7 +105,9 @@ button.danger{background:#49252a;border-color:#813942}
 .hires-section-head h2{margin:0}
 .hires-section-toggle{display:flex;align-items:center;flex:none}
 .hires-section-toggle input[type=checkbox]{width:auto;margin:0}
-.wd14-unused-notice{color:#e08a3c;font-size:11px;margin-left:4px;font-weight:600}
+.tag-routing{display:inline-flex;align-items:center;gap:6px;color:var(--muted);font-size:11px}
+.tag-routing label{display:inline-flex;align-items:center;gap:3px}
+.tag-routing input[type=checkbox]{width:auto;margin:0}
 .reference-fidelity-vram-notice{color:#e08a3c;font-size:11px;margin-left:4px;font-weight:600}
 #loginGate{position:fixed;inset:0;z-index:100;background:var(--bg);display:flex;align-items:center;justify-content:center}
 #loginGate form{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:22px;width:320px}
@@ -245,10 +247,6 @@ button.danger{background:#49252a;border-color:#813942}
     <div><label for="pag_end">PAG end</label><div class="combo" data-field="pag_end"></div></div>
   </div>
 
-  <div class="checks">
-    <label title="Add the WD14 tags from every ticked image to the main prompt. With this on, a prompt is optional."><input id="main_append_wd14_tags" type="checkbox" onchange="refreshNoticesThatDependOnStageSettings()"> Append WD14 tags</label>
-  </div>
-
   <div class="hires-section">
     <div class="hires-section-head">
       <label class="hires-section-toggle"><input id="hires" type="checkbox" onchange="refreshNoticesThatDependOnStageSettings()"></label>
@@ -278,7 +276,7 @@ button.danger{background:#49252a;border-color:#813942}
       <div><label for="hires_negative_prompt_mode">Hires negative mode</label><div class="combo" data-field="hires_negative_prompt_mode"></div></div>
     </div>
     <div class="fields two">
-      <div><label for="hires_wd14_tag_source">Hires WD14 tags</label><div class="combo" data-field="hires_wd14_tag_source"></div></div>
+      <div><label for="stage_one_wd14_tags" title="Read WD14 tags from the first stage's own output and place them around the hires prompt. Reference and source images route their own tags with their own checkboxes.">Stage 1 WD14 tags</label><div class="combo" data-field="stage_one_wd14_tags"></div></div>
       <div><label for="hires_reference_encode_size" title="Edge length Krea2 Edit references are encoded at for the hires pass; the budget is that many pixels squared. Reference tokens share one attention sequence with the target, and its VRAM cost grows with the square of the total, so a smaller reference is what makes room at a large hires target. Auto keeps the full budget. Anything else runs the hires stage as its own request.">Hires reference size</label><div class="combo" data-field="hires_reference_encode_size"></div></div>
     </div>
 
@@ -332,7 +330,7 @@ button.danger{background:#49252a;border-color:#813942}
         <span id="selectedSourceResolution"></span>
         <button type="button" onclick="chooseSourceImage()">Load source image</button>
         <label class="source-choice-radio" title="Lets the vision model read the source image; Krea2 never shows it the init image on its own. Also adds the source as a DiT reference, which costs VRAM."><input id="img2img_use_vision_on_source" type="checkbox"> Use vision on source</label>
-        <label class="source-choice-radio" title="Read WD14 danbooru tags from the source image. A stage still has to ask for them: tick 'Append WD14 tags' for the main pass, or set the hires tag source to the reference images."><input id="img2img_wd14_tag" type="checkbox"> Tag source with WD14<span class="wd14-unused-notice" hidden>(unused)</span></label>
+        <span class="tag-routing" title="Read WD14 danbooru tags from the source image and add them to the chosen stage's prompt.">WD14 tags to: <label><input id="img2img_source_tags_to_stage_one" type="checkbox"> stage 1</label><label><input id="img2img_source_tags_to_hires" type="checkbox"> hires</label></span>
         <input id="sourceImageFile" type="file" accept="image/png,image/jpeg,.png,.jpg,.jpeg" hidden>
       </div>
     </div>
@@ -384,7 +382,7 @@ const COMBO_FIELDS = {
   hires_upscaler:  {value:'Latent', options:[]},
   hires_prompt_mode:          {value:'append', options:['append','prepend','replace']},
   hires_negative_prompt_mode: {value:'append', options:['append','prepend','replace']},
-  hires_wd14_tag_source:      {value:'none',   options:['none','reference_images','stage_one']},
+  stage_one_wd14_tags:        {value:'not_used', options:['not_used','append','prepend']},
   hires_reference_encode_size:{value:'auto',   options:['auto','384','512','640','768','896','1024']},
   vae_tile_size:   {value:'32',  step:1,    options:['32','64','68','128','256','512']},
   img2img_denoise: {value:'0', step:0.05, options:['0','0.15','0.35','0.5','0.65','0.75','0.9']},
@@ -394,7 +392,7 @@ const COMBO_FIELDS = {
 };
 const NUMERIC_FIELDS = ['seed','steps','cfg','flow_shift','pag_scale','pag_start','pag_end','hires_steps','hires_denoise','vae_tile_size','img2img_denoise','img2img_noise_multiplier','grounding_px','beta_schedule_alpha','beta_schedule_beta','hires_noise_multiplier'];
 const TEXT_FIELDS = ['sampler','scheduler','hires_upscaler','extra_sample_args','pag_layers','fit_mode',
-  'hires_prompt','hires_prompt_mode','hires_negative_prompt','hires_negative_prompt_mode','hires_wd14_tag_source'];
+  'hires_prompt','hires_prompt_mode','hires_negative_prompt','hires_negative_prompt_mode','stage_one_wd14_tags'];
 
 let openComboList = null;
 
@@ -579,7 +577,7 @@ function renumberKrea2EditReferencePanels(){
 }
 
 function addKrea2EditReferencePanel(filename = '', referenceFidelity = RECOMMENDED_REFERENCE_FIDELITY,
-                                    tagWithWd14 = false){
+                                    tagsToStageOne = false, tagsToHires = false){
   const panel = document.createElement('div');
   panel.className = 'krea2edit-reference';
   panel.dataset.filename = filename;
@@ -598,11 +596,12 @@ function addKrea2EditReferencePanel(filename = '', referenceFidelity = RECOMMEND
           `<input type="number" class="krea2edit-reference-boost-input" value="${referenceFidelity}" step="0.5" min="0" autocomplete="off" oninput="refreshReferenceFidelityVramNotices()">` +
           `<span class="reference-fidelity-vram-notice" hidden>(extra VRAM)</span>` +
         `</label>` +
-        `<label class="krea2edit-reference-tag" title="Read WD14 danbooru tags from this reference. A stage still has to ask for them: tick 'Append WD14 tags' for the main pass, or set the hires tag source to the reference images."><input type="checkbox" class="krea2edit-reference-tag-input"> tag<span class="wd14-unused-notice" hidden>(unused)</span></label>` +
+        `<span class="krea2edit-reference-tag tag-routing" title="Read WD14 danbooru tags from this reference and add them to the chosen stage's prompt.">tags to: <label><input type="checkbox" class="krea2edit-reference-tags-stage-one-input"> s1</label><label><input type="checkbox" class="krea2edit-reference-tags-hires-input"> hi</label></span>` +
         `<button type="button" class="krea2edit-reference-remove">Remove</button>` +
       `</div>` +
     `</div>`;
-  panel.querySelector('.krea2edit-reference-tag-input').checked = !!tagWithWd14;
+  panel.querySelector('.krea2edit-reference-tags-stage-one-input').checked = !!tagsToStageOne;
+  panel.querySelector('.krea2edit-reference-tags-hires-input').checked = !!tagsToHires;
   panel.querySelector('.krea2edit-reference-load').onclick = () => {
     krea2EditReferencePanelBeingLoaded = panel;
     $('krea2EditReferenceFile').click();
@@ -615,7 +614,6 @@ function addKrea2EditReferencePanel(filename = '', referenceFidelity = RECOMMEND
   $('krea2EditReferenceList').appendChild(panel);
   renumberKrea2EditReferencePanels();
   setKrea2EditReferenceImage(panel, filename);
-  refreshWd14UnusedNotices();
   refreshReferenceFidelityVramNotices();
   return panel;
 }
@@ -679,7 +677,8 @@ function collectKrea2EditReferences(){
     .map(panel => ({
       filename: panel.dataset.filename || '',
       ref_boost: Number(panel.querySelector('.krea2edit-reference-boost-input').value),
-      wd14_tag: panel.querySelector('.krea2edit-reference-tag-input').checked,
+      tags_to_stage_one: panel.querySelector('.krea2edit-reference-tags-stage-one-input').checked,
+      tags_to_hires: panel.querySelector('.krea2edit-reference-tags-hires-input').checked,
     }))
     .filter(reference => reference.filename);
 }
@@ -688,7 +687,7 @@ function applyKrea2EditReferences(references){
   $('krea2EditReferenceList').innerHTML = '';
   (references || []).forEach(reference =>
     addKrea2EditReferencePanel(reference.filename, reference.ref_boost ?? RECOMMENDED_REFERENCE_FIDELITY,
-                               reference.wd14_tag));
+                               reference.tags_to_stage_one, reference.tags_to_hires));
   if (!krea2EditReferencePanels().length) addKrea2EditReferencePanel();
 }
 
@@ -781,7 +780,7 @@ function hiresSettingsVaryFromMain(){
   return loraSelectionDiffers
     || $('hires_prompt').value.trim() !== ''
     || $('hires_negative_prompt').value.trim() !== ''
-    || $('hires_wd14_tag_source').value !== 'none'
+    || $('stage_one_wd14_tags').value !== 'not_used'
     || hiresReferenceEncodeSize() > 0;
 }
 
@@ -790,14 +789,10 @@ function refreshHiresVariationNotice(){
   if (notice) notice.hidden = !hiresSettingsVaryFromMain();
 }
 
-function referenceTagsAreConsumed(){
-  if ($('main_append_wd14_tags').checked) return true;
-  return $('hires').checked && $('hires_wd14_tag_source').value === 'reference_images';
-}
-
-function refreshWd14UnusedNotices(){
-  const consumed = referenceTagsAreConsumed();
-  document.querySelectorAll('.wd14-unused-notice').forEach(notice => { notice.hidden = consumed; });
+function anyImageSendsTagsToStageOne(){
+  if ($('img2img_source_tags_to_stage_one').checked) return true;
+  return krea2EditReferencePanels().some(panel =>
+    panel.querySelector('.krea2edit-reference-tags-stage-one-input').checked);
 }
 
 function refreshReferenceFidelityVramNotices(){
@@ -809,7 +804,6 @@ function refreshReferenceFidelityVramNotices(){
 
 function refreshNoticesThatDependOnStageSettings(){
   refreshHiresVariationNotice();
-  refreshWd14UnusedNotices();
   refreshReferenceFidelityVramNotices();
 }
 
@@ -826,8 +820,8 @@ function collectParams(){
     hires_use_vision_on_lowres: $('hires_use_vision_on_lowres').checked,
     source_image: selectedSourceImage,
     img2img_use_vision_on_source: $('img2img_use_vision_on_source').checked,
-    img2img_wd14_tag: $('img2img_wd14_tag').checked,
-    main_append_wd14_tags: $('main_append_wd14_tags').checked,
+    img2img_source_tags_to_stage_one: $('img2img_source_tags_to_stage_one').checked,
+    img2img_source_tags_to_hires: $('img2img_source_tags_to_hires').checked,
     krea2_edit_enabled: $('krea2_edit_enabled').checked,
     krea2_edit_references: collectKrea2EditReferences(),
     extra_loras: collectSelectedLoras(),
@@ -841,7 +835,7 @@ function collectParams(){
 }
 
 function describeMissingPrompt(){
-  if (!$('prompt').value.trim() && !$('main_append_wd14_tags').checked) {
+  if (!$('prompt').value.trim() && !anyImageSendsTagsToStageOne()) {
     return 'Prompt is required, or enable WD14 tagging to build one from the images';
   }
   if ($('hires').checked && $('hires_prompt_mode').value === 'replace' && !$('hires_prompt').value.trim()) {
@@ -897,13 +891,13 @@ function formatJobDetails(params){
     ['Hires noise multiplier', p.hires ? (p.hires_noise_multiplier ?? '') : ''],
     ['Save low-res', p.save_lowres ? 'Yes' : 'No'],
     ['Vision data from lowres for hires', p.hires && p.hires_use_vision_on_lowres ? 'On' : ''],
-    ['Main WD14 tags', p.main_append_wd14_tags ? 'On' : ''],
+
     ['Hires prompt', p.hires ? (p.hires_prompt || '') : ''],
     ['Hires prompt mode', p.hires && p.hires_prompt ? (p.hires_prompt_mode || '') : ''],
     ['Hires negative prompt', p.hires ? (p.hires_negative_prompt || '') : ''],
     ['Hires negative mode', p.hires && p.hires_negative_prompt ? (p.hires_negative_prompt_mode || '') : ''],
-    ['Hires WD14 tags', p.hires && p.hires_wd14_tag_source && p.hires_wd14_tag_source !== 'none'
-      ? p.hires_wd14_tag_source : ''],
+    ['Stage 1 WD14 tags', p.hires && p.stage_one_wd14_tags && p.stage_one_wd14_tags !== 'not_used'
+      ? p.stage_one_wd14_tags : ''],
     ['Hires reference size', p.hires && p.hires_reference_encode_size > 0
       ? p.hires_reference_encode_size : ''],
     ['Detected WD14 tags', (p.wd14_tags || []).join(' | ')],
@@ -1005,8 +999,8 @@ function loadParamsIntoForm(p){
   });
   setSourceImage(p.source_image || '');
   $('img2img_use_vision_on_source').checked = !!p.img2img_use_vision_on_source;
-  $('img2img_wd14_tag').checked = !!p.img2img_wd14_tag;
-  $('main_append_wd14_tags').checked = !!p.main_append_wd14_tags;
+  $('img2img_source_tags_to_stage_one').checked = !!p.img2img_source_tags_to_stage_one;
+  $('img2img_source_tags_to_hires').checked = !!p.img2img_source_tags_to_hires;
   refreshNoticesThatDependOnStageSettings();
   $('krea2_edit_enabled').checked = !!p.krea2_edit_enabled;
   applyKrea2EditReferences(p.krea2_edit_references);

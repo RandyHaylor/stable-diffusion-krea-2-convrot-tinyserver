@@ -8,13 +8,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from prompt_composition import (  # noqa: E402
     HIRES_PROMPT_MODES,
-    HIRES_TAG_SOURCES,
+    STAGE_ONE_TAG_MODES,
+    apply_stage_one_tags,
     compose_hires_prompt,
     compose_prompt_with_tag_groups,
     describe_missing_prompt,
-    hires_tag_source_needs_stage_one_image,
-    reference_tags_are_consumed,
-    resolve_hires_tag_groups,
+    stage_one_tags_need_the_first_stage_image,
 )
 
 failures: list[str] = []
@@ -29,20 +28,6 @@ def check(description: str, condition: bool, detail: str = "") -> None:
 
 
 def main() -> int:
-    check("the main stage appending tags is enough to make tagging worth running",
-          reference_tags_are_consumed(True, False, "none"))
-    check("the hires stage reading reference tags is enough on its own",
-          reference_tags_are_consumed(False, True, "reference_images"),
-          "a lora-free hires pass may want tags the main pass does not")
-    check("nothing consumes reference tags when neither stage asks for them",
-          not reference_tags_are_consumed(False, True, "stage_one"),
-          "stage one tags come from the first stage's output, not the references")
-    check("a hires reference tag source with hires switched off consumes nothing",
-          not reference_tags_are_consumed(False, False, "reference_images"),
-          "the dropdown keeps its value while the hires pass is disabled")
-    check("neither stage appending tags means the tagger must not run at all",
-          not reference_tags_are_consumed(False, False, "none"))
-
     check("tag groups are appended after the prompt, single comma separated",
           compose_prompt_with_tag_groups("a photo", ["cat girl", "maid headdress"])
           == "a photo, cat girl, maid headdress")
@@ -121,34 +106,36 @@ def main() -> int:
     check("an unknown mode falls back to append rather than losing the text",
           compose_hires_prompt("a photo", "sharp focus", "nonsense", []) == "a photo, sharp focus")
 
-    check("the three hires tag sources are the supported set",
-          HIRES_TAG_SOURCES == ("none", "reference_images", "stage_one"),
-          f"got {HIRES_TAG_SOURCES}")
+    check("the three stage one tag modes are the supported set",
+          STAGE_ONE_TAG_MODES == ("not_used", "append", "prepend"),
+          f"got {STAGE_ONE_TAG_MODES}")
 
-    reference_tags = ["1girl, smile", "1boy, hat"]
     stage_one_tags = ["1girl, kitchen, teacup"]
 
-    check("the none source contributes no tags even when both are available",
-          resolve_hires_tag_groups("none", reference_tags, stage_one_tags) == [])
-    check("the reference source reuses every checked image's tags, in order",
-          resolve_hires_tag_groups("reference_images", reference_tags, stage_one_tags)
-          == ["1girl, smile", "1boy, hat"],
-          "these were already computed for the main stage; no image is tagged twice")
-    check("the stage one source uses only the first stage output's tags",
-          resolve_hires_tag_groups("stage_one", reference_tags, stage_one_tags)
-          == ["1girl, kitchen, teacup"])
+    check("the not_used mode leaves the hires prompt untouched",
+          apply_stage_one_tags("a photo", stage_one_tags, "not_used") == "a photo")
+    check("append puts the first stage's own tags after the hires prompt",
+          apply_stage_one_tags("a photo", stage_one_tags, "append")
+          == "a photo, 1girl, kitchen, teacup")
+    check("prepend puts the first stage's own tags before the hires prompt",
+          apply_stage_one_tags("a photo", stage_one_tags, "prepend")
+          == "1girl, kitchen, teacup, a photo")
+    check("several stage one groups keep their order in prepend mode",
+          apply_stage_one_tags("a photo", ["1girl, smile", "kitchen"], "prepend")
+          == "1girl, smile, kitchen, a photo")
+    check("an untagged first stage leaves the prompt alone in every mode",
+          apply_stage_one_tags("a photo", [], "append") == "a photo"
+          and apply_stage_one_tags("a photo", [], "prepend") == "a photo")
+    check("stage one tags alone are enough when there is no hires prompt",
+          apply_stage_one_tags("", stage_one_tags, "append") == "1girl, kitchen, teacup"
+          and apply_stage_one_tags("", stage_one_tags, "prepend") == "1girl, kitchen, teacup")
+    check("an unknown mode contributes nothing rather than guessing",
+          apply_stage_one_tags("a photo", stage_one_tags, "nonsense") == "a photo")
 
-    check("the reference source adds nothing when no image was checked",
-          resolve_hires_tag_groups("reference_images", [], stage_one_tags) == [])
-    check("the stage one source adds nothing when the stage one image was not tagged",
-          resolve_hires_tag_groups("stage_one", reference_tags, []) == [])
-    check("an unknown source contributes nothing rather than guessing",
-          resolve_hires_tag_groups("nonsense", reference_tags, stage_one_tags) == [])
-
-    check("only the stage one source needs the first stage image on disk",
-          hires_tag_source_needs_stage_one_image("stage_one")
-          and not hires_tag_source_needs_stage_one_image("reference_images")
-          and not hires_tag_source_needs_stage_one_image("none"),
+    check("only a mode that uses them needs the first stage image on disk",
+          stage_one_tags_need_the_first_stage_image("append")
+          and stage_one_tags_need_the_first_stage_image("prepend")
+          and not stage_one_tags_need_the_first_stage_image("not_used"),
           "this decides whether the low-res pass has to be forced")
 
     print()

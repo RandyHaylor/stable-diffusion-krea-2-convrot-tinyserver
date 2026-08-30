@@ -10,10 +10,11 @@ from __future__ import annotations
 HIRES_PROMPT_MODES = ("append", "prepend", "replace")
 DEFAULT_HIRES_PROMPT_MODE = "append"
 
-# Where the hires stage's tags come from: nowhere, the same reference images the
-# main stage tagged, or the first stage's own output.
-HIRES_TAG_SOURCES = ("none", "reference_images", "stage_one")
-DEFAULT_HIRES_TAG_SOURCE = "none"
+# What the hires prompt does with tags read from the first stage's own output.
+# Reference and source images route their own tags per stage, so this covers only
+# the generated image, which has no panel of its own.
+STAGE_ONE_TAG_MODES = ("not_used", "append", "prepend")
+DEFAULT_STAGE_ONE_TAG_MODE = "not_used"
 
 
 def compose_prompt_with_tag_groups(prompt: str, tag_groups: list[str]) -> str:
@@ -27,43 +28,29 @@ def compose_prompt_with_tag_groups(prompt: str, tag_groups: list[str]) -> str:
     return ", ".join(segment for segment in segments if segment)
 
 
-def hires_tag_source_needs_stage_one_image(hires_tag_source: str) -> bool:
-    """Whether this source requires the first stage's output to exist as a file.
+def stage_one_tags_need_the_first_stage_image(stage_one_tag_mode: str) -> bool:
+    """Whether this mode requires the first stage's output to exist as a file.
 
     Tagging the first stage's output means it has to be produced and saved before
     the hires request is built, which forces the low-res pass to run.
     """
-    return hires_tag_source == "stage_one"
+    return stage_one_tag_mode in ("append", "prepend")
 
 
-def reference_tags_are_consumed(main_append_wd14_tags: bool,
-                                hires_enabled: bool,
-                                hires_tag_source: str) -> bool:
-    """Whether any stage will use tags read from the references or the img2img source.
+def apply_stage_one_tags(prompt: str,
+                         stage_one_tag_groups: list[str],
+                         stage_one_tag_mode: str) -> str:
+    """Place tags read from the first stage's output around the hires prompt.
 
-    Ticking an image for tagging only says which images to read; each stage says
-    separately whether it wants the result. When no stage wants it the tagger is
-    never loaded, so the run pays nothing for tags it would discard.
+    Prepending puts the observed content ahead of the instruction, which reads as
+    a description the hires pass elaborates on; appending leaves the instruction
+    leading. An unrecognised mode contributes nothing rather than guessing.
     """
-    if main_append_wd14_tags:
-        return True
-    return hires_enabled and hires_tag_source == "reference_images"
-
-
-def resolve_hires_tag_groups(hires_tag_source: str,
-                             reference_image_tag_groups: list[str],
-                             stage_one_tag_groups: list[str]) -> list[str]:
-    """The tag groups the hires stage should use, given its chosen source.
-
-    Reference tags are the ones already computed for the main stage, so choosing
-    them tags no image twice. Any source yields nothing when its images produced
-    no tags, which leaves the hires prompt as the user wrote it.
-    """
-    if hires_tag_source == "reference_images":
-        return list(reference_image_tag_groups)
-    if hires_tag_source == "stage_one":
-        return list(stage_one_tag_groups)
-    return []
+    if stage_one_tag_mode == "append":
+        return compose_prompt_with_tag_groups(prompt, stage_one_tag_groups)
+    if stage_one_tag_mode == "prepend":
+        return compose_prompt_with_tag_groups("", [*stage_one_tag_groups, prompt])
+    return prompt
 
 
 def describe_missing_prompt(main_prompt: str,

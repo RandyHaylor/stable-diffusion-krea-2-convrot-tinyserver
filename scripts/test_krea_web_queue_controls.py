@@ -394,22 +394,21 @@ def main() -> int:
           untagged_job["params"].get("wd14_tags") == [],
           f"wd14_tags={untagged_job['params'].get('wd14_tags')!r}")
 
-    unconsumed_tag_params = build_job_params("img2img-tag-source-unconsumed")
-    unconsumed_tag_params["source_image"] = uploaded_source["name"]
-    unconsumed_tag_params["img2img_denoise"] = 0.75
-    unconsumed_tag_params["img2img_wd14_tag"] = True
-    client.post("/api/jobs", json={"params": unconsumed_tag_params}, headers=session_headers)
-    unconsumed_tag_job = wait_until(
+    unrouted_tag_params = build_job_params("img2img-tags-routed-nowhere")
+    unrouted_tag_params["source_image"] = uploaded_source["name"]
+    unrouted_tag_params["img2img_denoise"] = 0.75
+    client.post("/api/jobs", json={"params": unrouted_tag_params}, headers=session_headers)
+    unrouted_tag_job = wait_until(
         lambda: next((j for j in client.get("/api/state", headers=session_headers).json()["history"]
-                      if (j["params"] or {}).get("prompt") == "img2img-tag-source-unconsumed"
+                      if (j["params"] or {}).get("prompt") == "img2img-tags-routed-nowhere"
                       and j["status"] == "completed"), None),
-        20, "img2img-tag-source-unconsumed job to complete")
-    check("ticking the source tag box alone never loads the tagger, since nothing consumes it",
-          unconsumed_tag_job["params"].get("wd14_tags") == [],
-          "the main stage is not appending tags and the hires stage is off")
-    check("an unconsumed source tag box leaves the prompt exactly as typed",
-          find_generation_request_for_prompt("img2img-tag-source-unconsumed")["prompt"]
-          .startswith("img2img-tag-source-unconsumed <sd_cpp_extra_args>"),
+        20, "img2img-tags-routed-nowhere job to complete")
+    check("a source routed to no stage never loads the tagger",
+          unrouted_tag_job["params"].get("wd14_tags") == [],
+          "neither routing box is ticked, so nothing reads the image")
+    check("a source routed to no stage leaves the prompt exactly as typed",
+          find_generation_request_for_prompt("img2img-tags-routed-nowhere")["prompt"]
+          .startswith("img2img-tags-routed-nowhere <sd_cpp_extra_args>"),
           "no tags may be appended when no stage asked for them")
 
     noisy_img2img_params = build_job_params("img2img-noise-multiplier")
@@ -590,7 +589,8 @@ def main() -> int:
     check("a job with no prompt but tagging enabled is accepted",
           client.post("/api/jobs",
                       json={"params": {**build_job_params(""), "prompt": "",
-                                       "main_append_wd14_tags": True}},
+                                       "img2img_source_tags_to_stage_one": True,
+                                     "source_image": uploaded_source["name"]}},
                       headers=session_headers).status_code == 200)
     check("a hires replace mode with no hires prompt is refused",
           client.post("/api/jobs",

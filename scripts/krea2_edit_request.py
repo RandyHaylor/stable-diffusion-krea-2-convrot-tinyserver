@@ -33,11 +33,12 @@ def is_krea2_edit_enabled(params: dict) -> bool:
 
 
 def krea2_edit_references(params: dict) -> list[dict]:
-    """The usable references, in order, each as {filename, ref_boost}.
+    """The usable references, in order, each with its fidelity and tag routing.
 
     Panels the user left empty are dropped rather than sent as blanks. A boost
     that is missing or non-positive becomes neutral, which keeps every remaining
-    reference at the position the user arranged it in.
+    reference at the position the user arranged it in. Tag routing is per stage
+    and defaults to neither, so an untouched panel never costs a tagger run.
     """
     if not params.get("krea2_edit_enabled"):
         return []
@@ -49,7 +50,10 @@ def krea2_edit_references(params: dict) -> list[dict]:
         reference_fidelity = float(entry.get("ref_boost", NEUTRAL_REFERENCE_FIDELITY))
         if reference_fidelity <= 0:
             reference_fidelity = NEUTRAL_REFERENCE_FIDELITY
-        references.append({"filename": filename, "ref_boost": reference_fidelity})
+        references.append({"filename": filename,
+                           "ref_boost": reference_fidelity,
+                           "tags_to_stage_one": bool(entry.get("tags_to_stage_one")),
+                           "tags_to_hires": bool(entry.get("tags_to_hires"))})
     return references
 
 

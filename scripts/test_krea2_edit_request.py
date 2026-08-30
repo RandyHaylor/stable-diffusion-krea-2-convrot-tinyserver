@@ -57,6 +57,23 @@ def main() -> int:
     check("edit mode is on when enabled with at least one reference",
           is_krea2_edit_enabled(enabled_params()))
 
+    tag_routed = enabled_params(references=[
+        {"filename": "scene.png", "ref_boost": 1,
+         "tags_to_stage_one": True, "tags_to_hires": False},
+        {"filename": "person.png", "ref_boost": 1,
+         "tags_to_stage_one": False, "tags_to_hires": True},
+    ])
+    check("each reference carries its own per-stage tag routing",
+          [(reference["tags_to_stage_one"], reference["tags_to_hires"])
+           for reference in krea2_edit_references(tag_routed)]
+          == [(True, False), (False, True)],
+          "a reference can feed tags to one stage without the other")
+    check("a reference with no routing keys sends tags nowhere",
+          krea2_edit_references(enabled_params(references=[{"filename": "scene.png"}]))[0]
+          == {"filename": "scene.png", "ref_boost": 1.0,
+              "tags_to_stage_one": False, "tags_to_hires": False},
+          "ticking nothing must never cost a tagger run")
+
     check("references are empty when disabled",
           krea2_edit_references({}) == [])
     check("a reference without a filename is dropped",

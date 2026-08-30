@@ -42,22 +42,27 @@ def hires_settings_vary_from_main(hires_enabled: bool,
                                   extra_loras: list[dict],
                                   hires_prompt: str = "",
                                   hires_negative_prompt: str = "",
-                                  hires_tag_source: str = "none",
+                                  main_tag_groups: list[str] | None = None,
+                                  hires_tag_groups: list[str] | None = None,
+                                  stage_one_tag_mode: str = "not_used",
                                   hires_reference_encode_size: int = 0) -> bool:
     """Whether the hires stage's settings differ from the main stage's.
 
     One request carries one LoRA selection, one prompt and one ref_image_args,
     all shared by the two stages. Any variation therefore has to run as its own
     request, which reloads weights and costs the latent continuity the
-    in-request hires enjoys.
+    in-request hires enjoys. Tag groups only vary when the two stages would end
+    up with different prompts, so routing the same image to both is free.
     """
     if not hires_enabled:
         return False
     if hires_reference_encode_size > 0:
         return True
+    if stage_one_tag_mode != "not_used":
+        return True
+    if list(main_tag_groups or []) != list(hires_tag_groups or []):
+        return True
     if lora_selections_differ(select_loras_for_stage(extra_loras, "main"),
                               select_loras_for_stage(extra_loras, "hires")):
         return True
-    if hires_prompt.strip() or hires_negative_prompt.strip():
-        return True
-    return hires_tag_source != "none"
+    return bool(hires_prompt.strip() or hires_negative_prompt.strip())

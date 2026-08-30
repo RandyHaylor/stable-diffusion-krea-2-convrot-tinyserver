@@ -33,14 +33,15 @@ from krea2_edit_request import (
     build_vision_only_ref_image_args,
     krea2_edit_native_args_fields,
     krea2_edit_payload_fields,
+    krea2_edit_references,
 )
 from prompt_composition import (
     compose_hires_prompt,
     compose_prompt_with_tag_groups,
     describe_missing_prompt,
-    hires_tag_source_needs_stage_one_image,
-    reference_tags_are_consumed,
-    resolve_hires_tag_groups,
+    DEFAULT_STAGE_ONE_TAG_MODE,
+    apply_stage_one_tags,
+    stage_one_tags_need_the_first_stage_image,
 )
 
 
@@ -135,36 +136,47 @@ def without_non_finite_floats(value):
     return value
 
 
-def images_selected_for_tagging(p: dict) -> list[str]:
-    """Output filenames the user ticked for tagging, in the order they appear.
+def images_tagged_for_stage(p: dict, stage: str) -> list[str]:
+    """Output filenames routed to one stage's prompt, in the order they appear.
 
-    Krea2 Edit references and the img2img source are mutually exclusive in a
-    request, so only one of the two can contribute.
+    Each image says which stages receive its tags, so references and the img2img
+    source can both contribute, and either can feed one stage without the other.
     """
-    if p.get("krea2_edit_enabled"):
-        return [str(reference.get("filename", ""))
-                for reference in p.get("krea2_edit_references", [])
-                if reference.get("wd14_tag") and str(reference.get("filename", "")).strip()]
+    routing_key = f"tags_to_{stage}"
+    image_names = [str(reference.get("filename", ""))
+                   for reference in krea2_edit_references(p)
+                   if reference.get(routing_key)]
     source_image = str(p.get("source_image", "")).strip()
-    if source_image and p.get("img2img_wd14_tag"):
-        return [source_image]
-    return []
+    if source_image and p.get(f"img2img_source_{routing_key}"):
+        image_names.append(source_image)
+    return image_names
 
 
-def tag_groups_for_images(image_names: list[str]) -> list[str]:
+def tag_groups_for_images(image_names: list[str],
+                          tag_group_cache: dict[str, str] | None = None) -> list[str]:
     """One comma-separated tag string per image, skipping any that yield nothing.
 
     A missing tagger model is reported once and treated as "no tags" rather than
     failing the generation, since the user asked for an image, not for tagging.
+
+    The cache lets an image routed to both stages be read once per job rather
+    than once per stage.
     """
     tag_groups = []
     for image_name in image_names:
+        if tag_group_cache is not None and image_name in tag_group_cache:
+            cached_tag_group = tag_group_cache[image_name]
+            if cached_tag_group:
+                tag_groups.append(cached_tag_group)
+            continue
         try:
             tags = wd14_tagging.tag_image_file(OUTPUT_DIR / Path(image_name).name)
         except wd14_tagging.TaggerUnavailable as exc:
             print(f"[web] WD14 tagging skipped: {exc}", flush=True)
             return []
         tag_group = wd14_tagging.format_danbooru_tags_for_prompt(tags)
+        if tag_group_cache is not None:
+            tag_group_cache[image_name] = tag_group
         if tag_group:
             tag_groups.append(tag_group)
             print(f"[web] WD14 tagged {image_name}: {tag_group}", flush=True)
@@ -432,22 +444,28 @@ class QueueManager:
         if checkpoint:
             self.switch_checkpoint(checkpoint)
         hires_enabled = bool(p.get("hires"))
-        hires_tag_source = str(p.get("hires_wd14_tag_source", "none"))
-        reference_tag_groups = (tag_groups_for_images(images_selected_for_tagging(p))
-                                if reference_tags_are_consumed(bool(p.get("main_append_wd14_tags")),
-                                                               hires_enabled, hires_tag_source)
-                                else [])
-        main_tag_groups = reference_tag_groups if p.get("main_append_wd14_tags") else []
+        stage_one_tag_mode = str(p.get("stage_one_wd14_tags", DEFAULT_STAGE_ONE_TAG_MODE))
+        # One cache per job, so an image routed to both stages is read once.
+        tag_group_cache: dict[str, str] = {}
+        main_tag_groups = tag_groups_for_images(images_tagged_for_stage(p, "stage_one"),
+                                                tag_group_cache)
+        hires_image_tag_groups = (tag_groups_for_images(images_tagged_for_stage(p, "hires"),
+                                                        tag_group_cache)
+                                  if hires_enabled else [])
 
         settings_vary = hires_settings_vary_from_main(
             hires_enabled, p.get("extra_loras", []),
             str(p.get("hires_prompt", "")), str(p.get("hires_negative_prompt", "")),
-            hires_tag_source, hires_reference_encode_size(p))
+            main_tag_groups=main_tag_groups,
+            hires_tag_groups=hires_image_tag_groups,
+            stage_one_tag_mode=stage_one_tag_mode,
+            hires_reference_encode_size=hires_reference_encode_size(p))
 
         # The first stage's result must exist as a file before the hires request can
         # reference or tag it, and a varying hires stage renders from it directly.
         wants_lowres_reference = bool(hires_enabled and p.get("hires_use_vision_on_lowres"))
-        wants_stage_one_tags = hires_enabled and hires_tag_source_needs_stage_one_image(hires_tag_source)
+        wants_stage_one_tags = hires_enabled and stage_one_tags_need_the_first_stage_image(
+            stage_one_tag_mode)
         # Saving the low-res image does not need its own render: the runtime decodes
         # the pre-upscale latent it already holds. Only a stage that has to read that
         # image back as a file before the next request is built forces a split.
@@ -473,14 +491,14 @@ class QueueManager:
                 return outputs
 
         stage = "krea-web-highres" if hires_enabled else "krea-web"
-        hires_tag_groups = resolve_hires_tag_groups(hires_tag_source, reference_tag_groups,
-                                                    stage_one_tag_groups)
         outputs += self.run_single_backend_generation(
             p,
             hires=hires_enabled and not settings_vary,
             prefix=f"{stage}-{job['id']}",
             reference_image_names=lowres_reference_names,
-            tag_groups=hires_tag_groups if settings_vary else main_tag_groups,
+            tag_groups=hires_image_tag_groups if settings_vary else main_tag_groups,
+            stage_one_output_tag_groups=stage_one_tag_groups,
+            stage_one_tag_mode=stage_one_tag_mode if settings_vary else DEFAULT_STAGE_ONE_TAG_MODE,
             lora_stage="hires" if settings_vary else "main",
             upscale_from_image=first_stage_image_name if settings_vary else "",
             lowres_prefix=f"krea-web-lowres-{job['id']}" if returns_lowres_image else "")
@@ -491,7 +509,9 @@ class QueueManager:
                                       tag_groups: list[str] | None = None,
                                       lora_stage: str = "main",
                                       upscale_from_image: str = "",
-                                      lowres_prefix: str = "") -> list[str]:
+                                      lowres_prefix: str = "",
+                                      stage_one_output_tag_groups: list[str] | None = None,
+                                      stage_one_tag_mode: str = DEFAULT_STAGE_ONE_TAG_MODE) -> list[str]:
         # The job params are what both the output panel and the saved PNG report, so
         # the tags this request actually used are recorded there before it is sent.
         p["wd14_tags"] = list(tag_groups or [])
@@ -543,9 +563,11 @@ class QueueManager:
                 "return_lowres_image": bool(lowres_prefix),
             }
         if renders_hires_upscale:
-            prompt_text = compose_hires_prompt(p["prompt"], str(p.get("hires_prompt", "")),
-                                               str(p.get("hires_prompt_mode", "append")),
-                                               tag_groups or [])
+            prompt_text = apply_stage_one_tags(
+                compose_hires_prompt(p["prompt"], str(p.get("hires_prompt", "")),
+                                     str(p.get("hires_prompt_mode", "append")),
+                                     tag_groups or []),
+                stage_one_output_tag_groups or [], stage_one_tag_mode)
             negative_prompt_text = compose_hires_prompt(
                 str(p.get("negative_prompt", "")), str(p.get("hires_negative_prompt", "")),
                 str(p.get("hires_negative_prompt_mode", "append")), [])
@@ -815,7 +837,7 @@ def build_app(user: str, password: str, backend: str) -> FastAPI:
         params = body.get("params", {})
         missing_prompt_reason = describe_missing_prompt(
             str(params.get("prompt", "")),
-            bool(params.get("main_append_wd14_tags")),
+            bool(images_tagged_for_stage(params, "stage_one")),
             bool(params.get("hires")),
             str(params.get("hires_prompt", "")),
             str(params.get("hires_prompt_mode", "append")))

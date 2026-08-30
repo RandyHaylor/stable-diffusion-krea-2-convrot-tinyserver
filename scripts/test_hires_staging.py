@@ -84,19 +84,32 @@ def main() -> int:
           "one request carries one prompt, so a per-stage prompt forces its own request")
     check("a hires negative prompt override makes the settings vary",
           hires_settings_vary_from_main(True, [both_stages], hires_negative_prompt="blurry"))
-    check("a hires tag source other than none makes the settings vary",
-          hires_settings_vary_from_main(True, [both_stages], hires_tag_source="stage_one"))
-    check("the reference tag source also makes the settings vary",
-          hires_settings_vary_from_main(True, [both_stages], hires_tag_source="reference_images"))
+    check("hires tags that differ from the main stage's make the settings vary",
+          hires_settings_vary_from_main(True, [both_stages],
+                                        main_tag_groups=["1girl"], hires_tag_groups=["1boy"]),
+          "the two stages would need different prompts in one request")
+    check("identical tag groups on both stages keep the native path",
+          not hires_settings_vary_from_main(True, [both_stages],
+                                            main_tag_groups=["1girl"], hires_tag_groups=["1girl"]),
+          "the same prompt serves both stages, so no second request is needed")
+    check("tags on the hires stage alone make the settings vary",
+          hires_settings_vary_from_main(True, [both_stages], hires_tag_groups=["1boy"]))
+    check("tags on the main stage alone make the settings vary",
+          hires_settings_vary_from_main(True, [both_stages], main_tag_groups=["1girl"]))
+    check("using the first stage's own tags makes the settings vary",
+          hires_settings_vary_from_main(True, [both_stages], stage_one_tag_mode="append"),
+          "those tags are only known after the first stage has run")
+    check("not using the first stage's tags keeps the native path",
+          not hires_settings_vary_from_main(True, [both_stages], stage_one_tag_mode="not_used"))
     check("a hires reference encode size makes the settings vary",
           hires_settings_vary_from_main(True, [both_stages], hires_reference_encode_size=512),
           "one request carries one ref_image_args, so shrinking references needs its own request")
     check("an auto reference encode size keeps the native path",
           not hires_settings_vary_from_main(True, [both_stages], hires_reference_encode_size=0))
 
-    check("blank overrides and a none tag source keep the native path",
+    check("blank overrides and no tags keep the native path",
           not hires_settings_vary_from_main(True, [both_stages], hires_prompt="   ",
-                                           hires_negative_prompt="", hires_tag_source="none"),
+                                           hires_negative_prompt=""),
           "whitespace is not an override")
 
     print()
