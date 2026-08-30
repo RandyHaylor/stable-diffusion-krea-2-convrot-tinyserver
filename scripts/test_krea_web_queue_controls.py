@@ -371,6 +371,7 @@ def main() -> int:
     plain_img2img_params = build_job_params("img2img-plain")
     plain_img2img_params["source_image"] = uploaded_source["name"]
     plain_img2img_params["img2img_denoise"] = 0.75
+    plain_img2img_params["img2img_source_as_starting_latent"] = True
     client.post("/api/jobs", json={"params": plain_img2img_params}, headers=session_headers)
     wait_until(lambda: next((j for j in client.get("/api/state", headers=session_headers).json()["history"]
                              if (j["params"] or {}).get("prompt") == "img2img-plain"
@@ -394,9 +395,28 @@ def main() -> int:
           untagged_job["params"].get("wd14_tags") == [],
           f"wd14_tags={untagged_job['params'].get('wd14_tags')!r}")
 
+    tags_without_latent_params = build_job_params("source-tags-without-starting-latent")
+    tags_without_latent_params["source_image"] = uploaded_source["name"]
+    tags_without_latent_params["img2img_source_as_starting_latent"] = False
+    tags_without_latent_params["img2img_source_tags_to_stage_one"] = True
+    client.post("/api/jobs", json={"params": tags_without_latent_params}, headers=session_headers)
+    wait_until(lambda: next((j for j in client.get("/api/state", headers=session_headers).json()["history"]
+                             if (j["params"] or {}).get("prompt") == "source-tags-without-starting-latent"
+                             and j["status"] == "completed"), None),
+               20, "source-tags-without-starting-latent job to complete")
+    tags_without_latent_request = find_generation_request_for_prompt("source-tags-without-starting-latent")
+    check("a source used only for tags never becomes the starting latent",
+          "init_images" not in tags_without_latent_request
+          and "denoising_strength" not in tags_without_latent_request,
+          f"keys={sorted(tags_without_latent_request)}")
+    check("a source used only for tags still runs as txt2img",
+          stub_state["generation_paths"][-1] == "/sdapi/v1/txt2img",
+          f"path={stub_state['generation_paths'][-1]}")
+
     unrouted_tag_params = build_job_params("img2img-tags-routed-nowhere")
     unrouted_tag_params["source_image"] = uploaded_source["name"]
     unrouted_tag_params["img2img_denoise"] = 0.75
+    unrouted_tag_params["img2img_source_as_starting_latent"] = True
     client.post("/api/jobs", json={"params": unrouted_tag_params}, headers=session_headers)
     unrouted_tag_job = wait_until(
         lambda: next((j for j in client.get("/api/state", headers=session_headers).json()["history"]
@@ -414,6 +434,7 @@ def main() -> int:
     noisy_img2img_params = build_job_params("img2img-noise-multiplier")
     noisy_img2img_params["source_image"] = uploaded_source["name"]
     noisy_img2img_params["img2img_denoise"] = 0.75
+    noisy_img2img_params["img2img_source_as_starting_latent"] = True
     noisy_img2img_params["img2img_noise_multiplier"] = 1.4
     client.post("/api/jobs", json={"params": noisy_img2img_params}, headers=session_headers)
     wait_until(lambda: next((j for j in client.get("/api/state", headers=session_headers).json()["history"]
@@ -436,6 +457,7 @@ def main() -> int:
     referenced_source_params = build_job_params("img2img-source-as-reference")
     referenced_source_params["source_image"] = uploaded_source["name"]
     referenced_source_params["img2img_denoise"] = 0.75
+    referenced_source_params["img2img_source_as_starting_latent"] = True
     referenced_source_params["img2img_use_vision_on_source"] = True
     client.post("/api/jobs", json={"params": referenced_source_params}, headers=session_headers)
     wait_until(lambda: next((j for j in client.get("/api/state", headers=session_headers).json()["history"]

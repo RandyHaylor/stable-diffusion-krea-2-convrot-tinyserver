@@ -531,7 +531,12 @@ class QueueManager:
         # takes the hires resolution and the hires prompt rather than the main ones.
         renders_hires_upscale = bool(upscale_from_image)
         krea2_edit_fields = krea2_edit_payload_fields(p, load_output_image_as_base64)
-        source_name = "" if (krea2_edit_fields or renders_hires_upscale) else str(p.get("source_image", ""))
+        # The source image feeds three independent things; only its use as the
+        # starting latent conflicts with edit mode, whose target starts as pure
+        # noise, or with a hires pass that is upscaling the first stage instead.
+        source_name = ("" if (krea2_edit_fields or renders_hires_upscale
+                              or not p.get("img2img_source_as_starting_latent"))
+                       else str(p.get("source_image", "")))
         sample = {
             "sample_method": p["sampler"], "scheduler": p["scheduler"],
             "sample_steps": int(p["steps"]), "flow_shift": float(p["flow_shift"]),

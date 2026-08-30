@@ -329,6 +329,7 @@ button.danger{background:#49252a;border-color:#813942}
         <span id="selectedSourceName"></span>
         <span id="selectedSourceResolution"></span>
         <button type="button" onclick="chooseSourceImage()">Load source image</button>
+        <label class="source-choice-radio" title="Encode the source image and start the first stage from it instead of from noise. The denoise strength and noise multiplier below apply to it. Krea2 Edit needs a pure-noise target, so this is ignored while edit mode is on."><input id="img2img_source_as_starting_latent" type="checkbox"> Use as starting latent</label>
         <label class="source-choice-radio" title="Lets the vision model read the source image; Krea2 never shows it the init image on its own. Also adds the source as a DiT reference, which costs VRAM."><input id="img2img_use_vision_on_source" type="checkbox"> Use vision on source</label>
         <span class="tag-routing" title="Read WD14 danbooru tags from the source image and add them to the chosen stage's prompt.">WD14 tags to: <label><input id="img2img_source_tags_to_stage_one" type="checkbox"> stage 1</label><label><input id="img2img_source_tags_to_hires" type="checkbox"> hires</label></span>
         <input id="sourceImageFile" type="file" accept="image/png,image/jpeg,.png,.jpg,.jpeg" hidden>
@@ -819,6 +820,7 @@ function collectParams(){
     save_lowres: $('save_lowres').checked,
     hires_use_vision_on_lowres: $('hires_use_vision_on_lowres').checked,
     source_image: selectedSourceImage,
+    img2img_source_as_starting_latent: $('img2img_source_as_starting_latent').checked,
     img2img_use_vision_on_source: $('img2img_use_vision_on_source').checked,
     img2img_source_tags_to_stage_one: $('img2img_source_tags_to_stage_one').checked,
     img2img_source_tags_to_hires: $('img2img_source_tags_to_hires').checked,
@@ -998,6 +1000,7 @@ function loadParamsIntoForm(p){
     if (selected) strength.value = selected.strength;
   });
   setSourceImage(p.source_image || '');
+  $('img2img_source_as_starting_latent').checked = !!p.img2img_source_as_starting_latent;
   $('img2img_use_vision_on_source').checked = !!p.img2img_use_vision_on_source;
   $('img2img_source_tags_to_stage_one').checked = !!p.img2img_source_tags_to_stage_one;
   $('img2img_source_tags_to_hires').checked = !!p.img2img_source_tags_to_hires;
