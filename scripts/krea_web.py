@@ -30,10 +30,12 @@ import wd14_tagging
 from hires_staging import hires_settings_vary_from_main, select_loras_for_stage
 from hires_tiling import (
     describe_hires_tiling_plan,
-    hires_tile_boxes_for_params,
+    hires_tile_vision_ref_image_args,
+    hires_tiling_hop_sizes,
     renders_hires_by_tiling,
+    sends_each_hires_tile_to_the_vision_tower,
 )
-from tiled_refine import blend_tiles_into_canvas
+from tiled_refine import blend_tiles_into_canvas, covering_grid_tile_boxes
 from image_metadata import cached_civitai_hash, embed_generation_metadata
 from krea2_edit_request import (
     krea2_edit_native_args_fields,
@@ -722,22 +724,60 @@ class QueueManager:
         falls back to the main one rather than silently dropping every LoRA, which
         would leave a turbo checkpoint sampling far too few steps.
         """
-        tile_boxes = hires_tile_boxes_for_params(p)
         plan = describe_hires_tiling_plan(p)
+        hop_sizes = hires_tiling_hop_sizes(p)
         target_size = (int(p["hires_width"]), int(p["hires_height"]))
-        print(f"[web] tiled hires: {plan['columns']}x{plan['rows']} tiles of "
-              f"{plan['tile_width']}x{plan['tile_height']} overlapping "
-              f"{plan['overlap_pixels']}px into {target_size[0]}x{target_size[1]}", flush=True)
+        tile_loras = (select_loras_for_stage(p.get("extra_loras", []), "hires")
+                      or select_loras_for_stage(p.get("extra_loras", []), "main"))
 
-        first_stage_image = Image.open(OUTPUT_DIR / Path(first_stage_name).name).convert("RGB")
-        resampled_canvas = first_stage_image.resize(target_size, Image.LANCZOS)
+        current_image = Image.open(OUTPUT_DIR / Path(first_stage_name).name).convert("RGB")
+        for hop_index, hop_size in enumerate(hop_sizes):
+            current_image = self.render_one_tiling_hop(
+                p, current_image, hop_size, plan, tile_loras,
+                hires_prompt, hires_negative_prompt,
+                f"hop {hop_index + 1}/{len(hop_sizes)}")
+
+        blended_bytes = BytesIO()
+        current_image.save(blended_bytes, format="PNG")
+
+        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        name = f"{prefix}-{datetime.now():%Y%m%d-%H%M%S}-0.png"
+        metadata_payload = {"ui_params": dict(p), "seed": int(p["seed"]),
+                            "prompt": hires_prompt, "negative_prompt": hires_negative_prompt,
+                            "hires_tiling_plan": plan,
+                            "hires_tiling_hops": [list(size) for size in hop_sizes]}
+        (OUTPUT_DIR / name).write_bytes(
+            embed_generation_metadata(blended_bytes.getvalue(), metadata_payload))
+        if current_image.size != target_size:
+            raise RuntimeError(f"tiled hires produced {current_image.size}, "
+                               f"expected {target_size}")
+        return [name]
+
+    def render_one_tiling_hop(self, p: dict, source_image: Image.Image,
+                              hop_size: tuple[int, int], plan: dict, tile_loras: list[dict],
+                              hires_prompt: str, hires_negative_prompt: str,
+                              hop_label: str) -> Image.Image:
+        """Resample one step up and repaint that canvas as overlapping tiles.
+
+        Each hop is a complete tiled refine of its own, so a target too far for
+        one repaint is reached by several that each stay inside the factor a
+        tiled repaint holds together over.
+        """
+        tile_boxes = covering_grid_tile_boxes(hop_size[0], hop_size[1],
+                                             plan["tile_width"], plan["tile_height"],
+                                             plan["overlap_pixels"])
+        print(f"[web] tiled hires {hop_label}: {len(tile_boxes)} tiles of "
+              f"{plan['tile_width']}x{plan['tile_height']} overlapping "
+              f"{plan['overlap_pixels']}px into {hop_size[0]}x{hop_size[1]}", flush=True)
+
+        resampled_canvas = source_image.resize(hop_size, Image.LANCZOS)
         # Anchoring cuts each tile from a canvas already carrying the finished
         # ones, so a tile starts from its neighbour's refined pixels where they
         # overlap and has agreement to preserve rather than a conflict to invent.
         tile_source_canvas = resampled_canvas.copy() if plan["anchored"] else resampled_canvas
 
-        tile_loras = (select_loras_for_stage(p.get("extra_loras", []), "hires")
-                      or select_loras_for_stage(p.get("extra_loras", []), "main"))
+        sends_tile_vision = sends_each_hires_tile_to_the_vision_tower(p)
+        tile_vision_args = hires_tile_vision_ref_image_args(p)
         refined_tiles = []
         for index, box in enumerate(tile_boxes):
             tile_source = tile_source_canvas.crop(box)
@@ -769,6 +809,13 @@ class QueueManager:
                                          "multiplier": lora["multiplier"],
                                          "is_high_noise": False}
                                         for lora in tile_loras]
+            if sends_tile_vision:
+                # The same pixels serve as the starting latent and as what the
+                # vision tower reads, so the repaint is conditioned on this tile's
+                # own content rather than on a prompt written for the whole image.
+                tile_payload["vlm_images"] = [tile_payload["init_image"]]
+                if tile_vision_args:
+                    tile_payload["ref_image_args"] = tile_vision_args
             print(f"[web] tiled hires tile {index + 1}/{len(tile_boxes)} at {box}", flush=True)
             tile_result = self.run_generation_job(tile_payload, None)
             tile_images = tile_result.get("images", [])
@@ -782,20 +829,9 @@ class QueueManager:
             if plan["anchored"]:
                 tile_source_canvas.paste(refined_tile, (box[0], box[1]))
 
-        blended = blend_tiles_into_canvas(refined_tiles, tile_boxes,
-                                         target_size[0], target_size[1],
-                                         plan["overlap_pixels"])
-        blended_bytes = BytesIO()
-        blended.save(blended_bytes, format="PNG")
-
-        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-        name = f"{prefix}-{datetime.now():%Y%m%d-%H%M%S}-0.png"
-        metadata_payload = {"ui_params": dict(p), "seed": int(p["seed"]),
-                            "prompt": hires_prompt, "negative_prompt": hires_negative_prompt,
-                            "hires_tiling_plan": plan}
-        (OUTPUT_DIR / name).write_bytes(
-            embed_generation_metadata(blended_bytes.getvalue(), metadata_payload))
-        return [name]
+        return blend_tiles_into_canvas(refined_tiles, tile_boxes,
+                                       hop_size[0], hop_size[1],
+                                       plan["overlap_pixels"])
 
     def fetch_backend_capabilities(self, timeout: int = 10) -> dict:
         with urllib.request.urlopen(self.backend + "/sdcpp/v1/capabilities", timeout=timeout) as response:

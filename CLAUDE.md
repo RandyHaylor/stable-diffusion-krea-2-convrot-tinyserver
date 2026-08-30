@@ -104,6 +104,15 @@ Tiles must overlap, and an exact doubling does not overlap on its own
       the minimum
     - An exact 2x therefore needs THREE tiles per axis, not two
 
+A tiled hires tile can be read by the vision tower, like the img2img source
+    - `hires_tile_vision = on` sends the tile's own starting pixels as
+      `vlm_images` too, so the repaint is conditioned on this tile's content
+      rather than on a prompt written for the whole image
+    - `hires_tile_vision_weight` scales those tokens via `vlm_image_token_weight`
+    - Off by default: measured NO gain on a homogeneous subject, at 23% more
+      time, because the prompt already described every tile. The case for it is a
+      heterogeneous image where one tile is all floor and another all sky.
+
 Blending removes a seam step but cannot reconcile content
     - Independently refined neighbours disagree; cross-fading a disagreement
       makes a translucent ghost, not a clean join
@@ -112,11 +121,31 @@ Blending removes a seam step but cannot reconcile content
     - Seam-steepness metrics RATE A GHOST WELL: blur reads as a shallow
       gradient. Judge tiling by the seam crops, not by the numbers.
 
-Usable hires denoise falls as the tiling upscale factor rises
-    - A blurrier resample gives each tile more freedom to invent differently
-    - Measured: 2x held together at 0.6; 3x ghosted at 0.6, clean at 0.35
-    - `recommended_maximum_hires_denoise_for_tiling()` is guidance from those
-      three points, surfaced in the UI notice, enforced nowhere
+Effective steps per tile is `int(steps * denoise)`, and too few causes seams
+    - `stable-diffusion.cpp:5073`; 6 steps at denoise 0.6 spends THREE
+    - Too few steps means each tile guesses coarsely at whatever crosses a shared
+      band, and two coarse guesses from slightly different pixels diverge
+    - 8 steps with `krea2_raw_to_turbo_r256` at 0.6 and
+      `krea2_identity_edit_v1_2` at 1.0 measured 31% more detail than 6 steps
+      with turbo alone at 1.0, and read clean where the old settings ghosted
+    - The identity-edit LoRA is for preserving an init, which is exactly what a
+      tile anchored on its neighbour needs
+
+Ghosting guidance is keyed on tile count, and is thin
+    - `recommended_maximum_hires_denoise_for_tiling()`: 0.6 up to 4 tiles, 0.35
+      above, surfaced in the UI notice, enforced nowhere
+    - An earlier version keyed it on upscale factor. That did not survive
+      testing: two hops each within a doubling still ghosted, so factor is not
+      the variable
+    - All of it was measured at 6 steps without the identity-edit LoRA, so it is
+      probably pessimistic at 8 steps with it. Not re-measured.
+
+Judge tiling on the seam crops, not on seam metrics
+    - A ghost is a smeared low-contrast region, and blur reads as a SHALLOW
+      gradient, so a seam-steepness metric rates a ghosted result BETTER
+    - Measured: ghosted 1.13x median at the seam row, clean 2.08x
+    - A subject whose own content crosses a seam is unreadable as a test. Use
+      straight lines running the full width and height.
 
 === Response summary ===
 

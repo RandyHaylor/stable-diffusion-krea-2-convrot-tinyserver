@@ -13,6 +13,7 @@ off by default and worth choosing only when the target is out of reach.
 """
 from __future__ import annotations
 
+from krea2_edit_request import positive_weight_or_neutral
 from tiled_refine import covering_grid_tile_boxes, tile_start_positions_covering_length
 
 HIRES_TILING_MODES = ("off", "on")
@@ -101,22 +102,122 @@ def hires_upscale_factor(params: dict) -> float:
                int(params.get("hires_height", 0) or 0) / tile_height)
 
 
+RELAXED_TILING_DENOISE_CEILING = 0.6
+CROWDED_TILING_DENOISE_CEILING = 0.35
+# Above this many tiles, the grid has interior boundaries in both axes that cross
+# whatever the image puts there, rather than the single boundary per axis a 2x2
+# has. That is where a high denoise was measured to start ghosting.
+CROWDED_TILING_TILE_COUNT = 4
+
+
 def recommended_maximum_hires_denoise_for_tiling(params: dict) -> float:
-    """The most denoise a tiled pass takes at this factor before tiles disagree.
+    """The most denoise a tiled pass takes before neighbouring tiles disagree.
 
-    Resampling further leaves a blurrier source, which gives each tile more
-    freedom to invent its own version of whatever crosses a shared band. Past
-    some point the neighbours disagree and the cross-fade averages both into a
-    ghost, so the usable denoise falls as the factor rises.
+    Higher denoise lets each tile invent more, and where two tiles invent
+    different content in a shared band the cross-fade averages both into a ghost
+    rather than joining them.
 
-    This is a guide from three measured points, not a law: a doubling held
-    together at 0.6, a tripling ghosted at 0.6 and was clean at 0.35. Treat it as
-    the value to start below rather than a boundary anything is enforced at.
+    Keyed on tile count, because that is what the measurements support and an
+    earlier guess at upscale factor did not survive them:
+
+      2x2 grid, 4 tiles, denoise 0.6                   clean
+      4x4 grid, 16 tiles, denoise 0.6, one hop         ghosted
+      4x4 grid, 16 tiles, denoise 0.35, one hop        clean
+      4x4 grid via two hops each at most 2x, 0.6       still ghosted
+
+    That last row is why factor is not the variable: every hop stayed inside a
+    doubling and it ghosted anyway. Four points is thin, so this is the value to
+    start below, not a boundary anything is enforced at.
     """
-    factor = hires_upscale_factor(params)
-    if factor <= 1.0:
-        return 0.75
-    return max(0.2, min(0.75, 0.6 / (factor - 1.0)))
+    if len(hires_tile_boxes_for_params(params)) > CROWDED_TILING_TILE_COUNT:
+        return CROWDED_TILING_DENOISE_CEILING
+    return RELAXED_TILING_DENOISE_CEILING
+
+
+# The largest single resample a tiled pass takes before neighbouring tiles start
+# inventing different content. A doubling measured clean; a tripling did not.
+MAXIMUM_TILING_HOP_FACTOR = 2.0
+HIRES_TILING_HOP_MODES = ("single", "doubling")
+DEFAULT_HIRES_TILING_HOP_MODE = "doubling"
+
+
+def hires_tiling_hop_sizes(params: dict) -> list[tuple[int, int]]:
+    """The sizes a tiled hires pass steps through, ending exactly on the target.
+
+    One hop is cheapest but its usable denoise falls as the factor rises, so a
+    large target is reached by repeated doublings instead: each hop stays inside
+    the range a tiled repaint holds together over, and only the last one lands on
+    whatever odd size was actually asked for.
+    """
+    tile_width, tile_height = hires_tile_size(params)
+    target_width = int(params.get("hires_width", 0) or 0)
+    target_height = int(params.get("hires_height", 0) or 0)
+    if tile_width <= 0 or tile_height <= 0:
+        return []
+
+    target = (target_width, target_height)
+    hop_mode = str(params.get("hires_tiling_hops", DEFAULT_HIRES_TILING_HOP_MODE))
+    if hop_mode not in HIRES_TILING_HOP_MODES:
+        hop_mode = DEFAULT_HIRES_TILING_HOP_MODE
+    if hop_mode == "single":
+        return [target]
+
+    hops: list[tuple[int, int]] = []
+    current_width, current_height = tile_width, tile_height
+    # Bounded by the factor shrinking geometrically; the guard is for safety, not
+    # for a case that is expected to arise.
+    while len(hops) < 8:
+        remaining = max(target_width / current_width, target_height / current_height)
+        if remaining <= MAXIMUM_TILING_HOP_FACTOR:
+            hops.append(target)
+            return hops
+        current_width = int(current_width * MAXIMUM_TILING_HOP_FACTOR)
+        current_height = int(current_height * MAXIMUM_TILING_HOP_FACTOR)
+        hops.append((current_width, current_height))
+    hops.append(target)
+    return hops
+
+
+HIRES_TILE_VISION_MODES = ("off", "on")
+DEFAULT_HIRES_TILE_VISION_MODE = "off"
+NEUTRAL_HIRES_TILE_VISION_WEIGHT = 1.0
+
+
+def sends_each_hires_tile_to_the_vision_tower(params: dict) -> bool:
+    """Whether a tile's own starting pixels are also read by the vision model.
+
+    The same paradigm the img2img source uses: the pixels serve as the starting
+    latent and are separately described by the vision tower, so the repaint is
+    conditioned on what is actually in this tile rather than on a prompt written
+    for the whole image. A tile of shelving gets told it is shelving.
+    """
+    if str(params.get("hires_tile_vision", DEFAULT_HIRES_TILE_VISION_MODE)) not in \
+            HIRES_TILE_VISION_MODES:
+        return False
+    return str(params.get("hires_tile_vision",
+                          DEFAULT_HIRES_TILE_VISION_MODE)) == "on"
+
+
+def hires_tile_vision_weight(params: dict) -> float:
+    """How hard a tile's own vision tokens pull, 1.0 for untouched."""
+    return positive_weight_or_neutral(
+        params.get("hires_tile_vision_weight", NEUTRAL_HIRES_TILE_VISION_WEIGHT),
+        NEUTRAL_HIRES_TILE_VISION_WEIGHT)
+
+
+def hires_tile_vision_ref_image_args(params: dict) -> str:
+    """Native args carrying the weight on a tile's own vision tokens.
+
+    A tile carries exactly one vision image, so the weight needs no positional
+    padding. Empty when the weight is neutral, which keeps the runtime on its
+    unweighted path, and empty when tile vision is off at all.
+    """
+    if not sends_each_hires_tile_to_the_vision_tower(params):
+        return ""
+    weight = hires_tile_vision_weight(params)
+    if weight == NEUTRAL_HIRES_TILE_VISION_WEIGHT:
+        return ""
+    return f"vlm_image_token_weight={weight:g}"
 
 
 def anchors_each_hires_tile_to_its_neighbours(params: dict) -> bool:

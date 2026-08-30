@@ -286,6 +286,9 @@ button.danger{background:#49252a;border-color:#813942}
       <div><label for="hires_upscaler">Hires upscaler</label><div class="combo" data-field="hires_upscaler"></div></div>
       <div><label for="hires_tiling" title="Render the hires pass as overlapping tiles instead of inside the request. Each tile is the main pass's own resolution, so a target too large for one attention sequence becomes reachable. The cost is the latent continuity the in-request pass keeps: tiling decodes the first stage, resamples it up and repaints it, so it round trips through the VAE and runs one request per tile.">Hires tiling</label><div class="combo" data-field="hires_tiling"></div></div>
       <div><label for="hires_tile_overlap" title="How far neighbouring hires tiles share, in pixels of the target. The blend cross-fades across this band, so a wider overlap hides a disagreement between tiles over more pixels, at the cost of more tiles to cover the same target.">Hires tile overlap</label><div class="combo" data-field="hires_tile_overlap"></div></div>
+      <div><label for="hires_tile_vision" title="Also show each tile's own starting pixels to the vision model, the same paradigm the img2img source uses: the pixels are both the starting latent and what the vision tower describes, so a tile is conditioned on its own content rather than on a prompt written for the whole image. Costs vision tokens in every tile's attention sequence, about 23% more time. Measured no gain on a homogeneous subject, where the prompt already describes every tile; the case for it is a heterogeneous image where one tile is all floor and another all sky.">Hires tile vision</label><div class="combo" data-field="hires_tile_vision"></div></div>
+      <div><label for="hires_tile_vision_weight" title="How hard a tile's own vision tokens pull. Exactly 1 leaves the runtime on its unweighted path. Only applies while hires tile vision is on.">Hires tile vision weight</label><div class="combo" data-field="hires_tile_vision_weight"></div></div>
+      <div><label for="hires_tiling_hops" title="How far each tiled pass resamples. Doubling reaches a distant target in several passes that each at most double, which measured 27% more detail than one large hop; the last pass lands on the exact target. Single goes straight there in one pass, which is cheaper and softer. Neither fixes ghosting: that is governed by denoise and tile count.">Hires tiling hops</label><div class="combo" data-field="hires_tiling_hops"></div></div>
       <div><label for="hires_tile_source" title="Where each tile's starting pixels come from. Anchored writes each finished tile back before the next is cut, so a tile starts from its neighbour's refined pixels where they overlap and has agreement to preserve. Independent cuts every tile from the same resampled canvas, so neighbours can disagree about anything crossing their shared band, and the blend turns that disagreement into a translucent ghost rather than removing it. Both cost the same number of passes.">Hires tile source</label><div class="combo" data-field="hires_tile_source"></div></div>
     </div>
     <div id="hiresTilingNotice" class="hires-variation-notice" hidden></div>
@@ -402,11 +405,15 @@ const COMBO_FIELDS = {
   hires_tiling:       {value:'off', options:['off','on']},
   hires_tile_overlap: {value:'128', step:16, options:['64','96','128','192','256']},
   hires_tile_source:  {value:'anchored', options:['anchored','independent']},
+  hires_tiling_hops:  {value:'doubling', options:['doubling','single']},
+  hires_tile_vision:  {value:'off', options:['off','on']},
+  hires_tile_vision_weight: {value:'1', step:0.05, options:['0.5','0.75','1','1.25','1.5']},
 };
-const NUMERIC_FIELDS = ['seed','steps','cfg','flow_shift','pag_scale','pag_start','pag_end','hires_steps','hires_denoise','vae_tile_size','img2img_denoise','img2img_noise_multiplier','grounding_px','beta_schedule_alpha','beta_schedule_beta','hires_noise_multiplier','hires_tile_overlap'];
+const NUMERIC_FIELDS = ['seed','steps','cfg','flow_shift','pag_scale','pag_start','pag_end','hires_steps','hires_denoise','vae_tile_size','img2img_denoise','img2img_noise_multiplier','grounding_px','beta_schedule_alpha','beta_schedule_beta','hires_noise_multiplier','hires_tile_overlap','hires_tile_vision_weight'];
 const TEXT_FIELDS = ['sampler','scheduler','hires_upscaler','extra_sample_args','pag_layers','fit_mode',
   'hires_prompt','hires_prompt_mode','hires_negative_prompt','hires_negative_prompt_mode','stage_one_wd14_tags','hires_vision_source',
-  'img2img_source_vision_grounding_size','hires_tiling','hires_tile_source'];
+  'img2img_source_vision_grounding_size','hires_tiling','hires_tile_source','hires_tiling_hops',
+  'hires_tile_vision'];
 
 let openComboList = null;
 
@@ -833,6 +840,23 @@ function tileStartCountCoveringLength(canvasLength, tileLength, minimumOverlap){
   return Math.ceil((canvasLength - tileLength) / stride) + 1;
 }
 
+function tilingHopSizes(tileWidth, tileHeight, targetWidth, targetHeight){
+  // Mirrors hires_tiling_hop_sizes for the notice only.
+  if ($('hires_tile_source') && $('hires_tiling_hops')
+      && $('hires_tiling_hops').value === 'single') return [[targetWidth, targetHeight]];
+  const hops = [];
+  let width = tileWidth, height = tileHeight;
+  while (hops.length < 8) {
+    const remaining = Math.max(targetWidth / width, targetHeight / height);
+    if (remaining <= 2) { hops.push([targetWidth, targetHeight]); return hops; }
+    width = Math.floor(width * 2);
+    height = Math.floor(height * 2);
+    hops.push([width, height]);
+  }
+  hops.push([targetWidth, targetHeight]);
+  return hops;
+}
+
 function refreshHiresTilingNotice(){
   const notice = $('hiresTilingNotice');
   if (!notice) return;
@@ -850,17 +874,21 @@ function refreshHiresTilingNotice(){
   notice.hidden = !(tilingRequested && tileCount > 1);
 
   const upscaleFactor = Math.max(hiresWidth / tileWidth, hiresHeight / tileHeight);
-  const recommendedDenoise = upscaleFactor <= 1
-    ? 0.75 : Math.max(0.2, Math.min(0.75, 0.6 / (upscaleFactor - 1)));
+  // Keyed on tile count, matching recommended_maximum_hires_denoise_for_tiling:
+  // a 2x2 grid held together at 0.6, a 4x4 needed 0.35.
+  const recommendedDenoise = tileCount > 4 ? 0.35 : 0.6;
   const denoise = Number($('hires_denoise').value);
+  const hopSizes = tilingHopSizes(tileWidth, tileHeight, hiresWidth, hiresHeight);
   let text =
     `Hires tiling: ${columns}x${rows} = ${tileCount} passes of ${tileWidth}x${tileHeight}, ` +
-    `overlapping ${overlap}px, ${upscaleFactor.toFixed(2)}x upscale. ` +
-    `One request per tile, and no latent continuity.`;
+    `overlapping ${overlap}px, ${upscaleFactor.toFixed(2)}x upscale` +
+    (hopSizes.length > 1 ? ` over ${hopSizes.length} hops` : '') +
+    `. One request per tile, and no latent continuity.`;
   if (denoise > recommendedDenoise + 0.01) {
-    text += ` Denoise ${denoise} is high for this factor; measurements start ghosting ` +
-      `above about ${recommendedDenoise.toFixed(2)}, where neighbouring tiles invent ` +
-      `different content and the blend averages both.`;
+    text += ` Denoise ${denoise} is high for a ${tileCount} tile grid; ` +
+      `${recommendedDenoise} is the highest measured clean here. Above it, ` +
+      `neighbouring tiles invent different content and the blend averages both ` +
+      `into a ghost. More hops do not fix that.`;
   }
   notice.textContent = text;
 }
@@ -979,7 +1007,10 @@ function formatJobDetails(params){
     ['Hires reference size', p.hires && p.hires_reference_encode_size > 0
       ? p.hires_reference_encode_size : ''],
     ['Hires tiling', p.hires && p.hires_tiling === 'on'
-      ? `${p.hires_tile_source || 'independent'}, ${p.hires_tile_overlap ?? 128}px overlap` : ''],
+      ? `${p.hires_tile_source || 'independent'}, ${p.hires_tile_overlap ?? 128}px overlap, `
+        + `${p.hires_tiling_hops || 'single'} hop(s)` : ''],
+    ['Hires tile vision', p.hires && p.hires_tiling === 'on' && p.hires_tile_vision === 'on'
+      ? `on, weight ${p.hires_tile_vision_weight ?? 1}` : ''],
     ['Detected WD14 tags', (p.wd14_tags || []).join(' | ')],
     ['VAE tile', p.vae_tile_size ?? ''],
   ];
@@ -1071,6 +1102,9 @@ function loadParamsIntoForm(p){
   $('hires_tile_overlap').value = p.hires_tile_overlap ?? 128;
   // Params saved before anchoring existed were rendered from one static canvas.
   $('hires_tile_source').value = p.hires_tile_source || 'independent';
+  $('hires_tiling_hops').value = p.hires_tiling_hops || 'single';
+  $('hires_tile_vision').value = p.hires_tile_vision || 'off';
+  $('hires_tile_vision_weight').value = p.hires_tile_vision_weight ?? 1;
   $('hires').checked = !!p.hires;
   $('save_lowres').checked = !!p.save_lowres;
   $('pag_enabled').checked = !!p.pag_enabled;

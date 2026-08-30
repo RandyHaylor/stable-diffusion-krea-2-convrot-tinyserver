@@ -20,7 +20,12 @@ from hires_tiling import (  # noqa: E402
     hires_tile_boxes_for_params,
     hires_tile_overlap_pixels,
     hires_tile_size,
+    hires_tile_vision_ref_image_args,
+    hires_tile_vision_weight,
+    hires_tiling_hop_sizes,
     hires_upscale_factor,
+    sends_each_hires_tile_to_the_vision_tower,
+    MAXIMUM_TILING_HOP_FACTOR,
     recommended_maximum_hires_denoise_for_tiling,
     renders_hires_by_tiling,
 )
@@ -139,21 +144,84 @@ def main() -> int:
           f"got {hires_upscale_factor(params())}")
     check("a target no larger than the tile is not an upscale",
           hires_upscale_factor(params(hires_width=832, hires_height=1216)) == 1.0)
-    check("the recommended denoise matches what a doubling measured clean at",
-          abs(recommended_maximum_hires_denoise_for_tiling(params()) - 0.6) < 0.01,
-          f"got {recommended_maximum_hires_denoise_for_tiling(params())}")
-    check("a tripling recommends less denoise than a doubling",
+    check("a four tile grid allows the denoise it measured clean at",
+          abs(recommended_maximum_hires_denoise_for_tiling(
+              params(hires_width=1536, hires_height=2304)) - 0.6) < 0.01,
+          "2x2 at 0.6 was measured clean")
+    check("a crowded grid recommends the lower denoise it measured clean at",
+          abs(recommended_maximum_hires_denoise_for_tiling(
+              params(hires_width=2432, hires_height=3648)) - 0.35) < 0.01,
+          "4x4 ghosted at 0.6 and was clean at 0.35")
+    check("the recommendation is one of the two measured values, never interpolated",
+          all(recommended_maximum_hires_denoise_for_tiling(
+                  params(hires_width=width, hires_height=int(width * 1216 / 832)))
+              in (0.35, 0.6)
+              for width in (900, 1200, 1536, 1664, 2432, 3328, 6000)),
+          "no point between them has been measured, so none is claimed")
+    check("tile vision is off unless asked for",
+          not sends_each_hires_tile_to_the_vision_tower({}),
+          "it costs vision tokens in every tile's sequence")
+    check("tile vision engages when switched on",
+          sends_each_hires_tile_to_the_vision_tower({"hires_tile_vision": "on"}))
+    check("an unrecognised tile vision mode is treated as off",
+          not sends_each_hires_tile_to_the_vision_tower({"hires_tile_vision": "maybe"}))
+    check("the tile vision weight defaults to neutral",
+          hires_tile_vision_weight({}) == 1.0)
+    check("a non-positive tile vision weight falls back to neutral",
+          hires_tile_vision_weight({"hires_tile_vision_weight": -2}) == 1.0)
+    check("a neutral tile vision weight sends no args, keeping the unweighted path",
+          hires_tile_vision_ref_image_args({"hires_tile_vision": "on"}) == "")
+    check("a weighted tile vision needs no positional padding, being one image",
+          hires_tile_vision_ref_image_args({"hires_tile_vision": "on",
+                                            "hires_tile_vision_weight": 0.5})
+          == "vlm_image_token_weight=0.5",
+          f"got {hires_tile_vision_ref_image_args({'hires_tile_vision': 'on', 'hires_tile_vision_weight': 0.5})!r}")
+    check("a weight with tile vision off sends nothing, having no tokens to weight",
+          hires_tile_vision_ref_image_args({"hires_tile_vision_weight": 0.5}) == "")
+
+    check("more hops do not raise the recommendation",
           recommended_maximum_hires_denoise_for_tiling(
-              params(hires_width=2496, hires_height=3648))
-          < recommended_maximum_hires_denoise_for_tiling(params()),
-          "a blurrier source gives tiles more room to disagree")
-    check("the recommendation never drops to nothing or exceeds a full repaint",
-          all(0.2 <= recommended_maximum_hires_denoise_for_tiling(
-                  params(hires_width=width, hires_height=int(width * 1216 / 832))) <= 0.75
-              for width in (900, 1200, 1664, 2496, 3328, 6000)))
+              params(hires_width=2432, hires_height=3648, hires_tiling_hops="doubling"))
+          == recommended_maximum_hires_denoise_for_tiling(
+              params(hires_width=2432, hires_height=3648, hires_tiling_hops="single")),
+          "two hops each within a doubling still ghosted at 0.6")
     check("the plan carries the factor and the recommendation",
           describe_hires_tiling_plan(params())["upscale_factor"] == 2.0
           and describe_hires_tiling_plan(params())["recommended_maximum_denoise"] > 0)
+
+    check("a doubling is reached in one hop, since one hop already suffices",
+          hires_tiling_hop_sizes(params()) == [(1664, 2432)],
+          f"got {hires_tiling_hop_sizes(params())}")
+    check("single hop mode goes straight to the target however far it is",
+          hires_tiling_hop_sizes(params(hires_width=2432, hires_height=3648,
+                                        hires_tiling_hops="single"))
+          == [(2432, 3648)])
+
+    tripling_hops = hires_tiling_hop_sizes(params(hires_width=2432, hires_height=3648))
+    check("a tripling is reached in two hops rather than one",
+          len(tripling_hops) == 2,
+          f"got {tripling_hops}")
+    check("every hop lands on or below the hop factor",
+          all(max(hop[0] / previous[0], hop[1] / previous[1])
+              <= MAXIMUM_TILING_HOP_FACTOR + 0.001
+              for previous, hop in zip([(832, 1216)] + tripling_hops, tripling_hops)),
+          f"got {tripling_hops}")
+    check("the last hop is exactly the requested target",
+          tripling_hops[-1] == (2432, 3648),
+          "an intermediate size must never become the output size")
+    check("hops are strictly growing, so none is wasted",
+          all(later[0] > earlier[0] and later[1] > earlier[1]
+              for earlier, later in zip(tripling_hops, tripling_hops[1:])))
+
+    for far_width in (2432, 3328, 5000, 8000):
+        far_hops = hires_tiling_hop_sizes(params(hires_width=far_width,
+                                                 hires_height=int(far_width * 1216 / 832)))
+        check(f"a {far_width}px target keeps every hop within the factor",
+              all(max(hop[0] / previous[0], hop[1] / previous[1])
+                  <= MAXIMUM_TILING_HOP_FACTOR + 0.001
+                  for previous, hop in zip([(832, 1216)] + far_hops, far_hops))
+              and far_hops[-1][0] == far_width,
+              f"{len(far_hops)} hop(s): {far_hops}")
 
     print()
     if failures:
