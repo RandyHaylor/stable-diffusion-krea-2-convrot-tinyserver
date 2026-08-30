@@ -100,6 +100,46 @@ def grid_tile_crop_boxes(canvas_width: int, canvas_height: int,
             for row in range(rows) for column in range(columns)]
 
 
+def tile_start_positions_covering_length(canvas_length: int, tile_length: int,
+                                         minimum_overlap_pixels: int) -> list[int]:
+    """Start offsets of equally sized tiles covering a length, with none hanging off.
+
+    The count is the fewest tiles whose stride reaches the far edge, and they are
+    then spread evenly rather than marched at the stride with the last one pulled
+    inwards. Even spacing means every tile carries real coverage, every
+    neighbouring pair overlaps by the same amount, and that amount is never less
+    than the minimum asked for. Marching instead can leave the final pair sharing
+    almost everything, and one wasted tile is one wasted generation pass.
+    """
+    stride = tile_length - minimum_overlap_pixels
+    if stride <= 0:
+        raise ValueError(f"a {tile_length}px tile overlapping by "
+                         f"{minimum_overlap_pixels}px never advances")
+    if canvas_length <= tile_length:
+        return [0]
+
+    span_to_cover = canvas_length - tile_length
+    tile_count = -(-span_to_cover // stride) + 1
+    return [round(index * span_to_cover / (tile_count - 1))
+            for index in range(tile_count)]
+
+
+def covering_grid_tile_boxes(canvas_width: int, canvas_height: int,
+                             tile_width: int, tile_height: int,
+                             minimum_overlap_pixels: int) -> list[tuple[int, int, int, int]]:
+    """Row-major crop boxes covering a canvas of any size with same-sized tiles.
+
+    Unlike `grid_tile_crop_boxes`, the canvas need not be an exact multiple of the
+    stride; the tiles at the far edges are pulled inwards instead.
+    """
+    column_starts = tile_start_positions_covering_length(canvas_width, tile_width,
+                                                         minimum_overlap_pixels)
+    row_starts = tile_start_positions_covering_length(canvas_height, tile_height,
+                                                      minimum_overlap_pixels)
+    return [(column, row, column + tile_width, row + tile_height)
+            for row in row_starts for column in column_starts]
+
+
 def tiles_needed_to_span(canvas_length: int, tile_length: int, overlap_pixels: int) -> int:
     """How many overlapping tiles cover a length exactly, or an error saying why not."""
     stride = tile_length - overlap_pixels

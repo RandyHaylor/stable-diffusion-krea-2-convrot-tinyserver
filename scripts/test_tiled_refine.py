@@ -21,7 +21,9 @@ from tiled_refine import (  # noqa: E402
     VERTICAL_OVERLAP_PIXELS,
     blend_tiles_into_canvas,
     blend_vertically_overlapping_tiles,
+    covering_grid_tile_boxes,
     grid_tile_crop_boxes,
+    tile_start_positions_covering_length,
     join_tiles_without_blending,
     tiles_needed_to_span,
     vertical_tile_crop_boxes,
@@ -226,6 +228,98 @@ def main() -> int:
         tile_count_mismatch_rejected = True
     check("fewer tiles than boxes is refused rather than leaving a hole",
           tile_count_mismatch_rejected)
+
+    # --- covering tiler, for hires targets the stride does not divide evenly ---
+    check("a length the stride divides evenly is tiled at the plain stride",
+          tile_start_positions_covering_length(1536, 832, 128) == [0, 704],
+          f"got {tile_start_positions_covering_length(1536, 832, 128)}")
+    check("one tile is enough when the canvas is no bigger than a tile",
+          tile_start_positions_covering_length(832, 832, 128) == [0]
+          and tile_start_positions_covering_length(700, 832, 128) == [0],
+          "a canvas smaller than a tile still needs covering exactly once")
+    check("a stride that overshoots spreads the tiles evenly instead",
+          tile_start_positions_covering_length(2048, 832, 128) == [0, 608, 1216],
+          f"got {tile_start_positions_covering_length(2048, 832, 128)}")
+    check("no tile ever hangs off the far edge",
+          all(start + 832 <= 2048
+              for start in tile_start_positions_covering_length(2048, 832, 128)))
+    check("an exact doubling still overlaps, rather than butting tiles together",
+          tile_start_positions_covering_length(1664, 832, 128) == [0, 416, 832],
+          "two 832px tiles cover 1664px only by touching, which leaves no blend")
+    check("positions are strictly increasing, so no tile is redundant",
+          all(second > first
+              for first, second in zip(tile_start_positions_covering_length(3000, 832, 128),
+                                       tile_start_positions_covering_length(3000, 832, 128)[1:])))
+
+    for spread_length in (1000, 1537, 1664, 1920, 2048, 2431, 3000):
+        spread_starts = tile_start_positions_covering_length(spread_length, 832, 128)
+        smallest_overlap = min((832 - (second - first)
+                                for first, second in zip(spread_starts, spread_starts[1:])),
+                               default=832)
+        check(f"a {spread_length}px canvas keeps every overlap at or above the minimum",
+              smallest_overlap >= 128,
+              f"smallest overlap was {smallest_overlap}px across {len(spread_starts)} tile(s)")
+
+    for awkward_length in (1000, 1537, 1920, 2048, 2431, 3000):
+        starts = tile_start_positions_covering_length(awkward_length, 832, 128)
+        covered = np.zeros(awkward_length, dtype=bool)
+        for start in starts:
+            covered[start:start + 832] = True
+        check(f"a {awkward_length}px canvas is fully covered with no gap",
+              bool(np.all(covered)),
+              f"{len(starts)} tile(s) at {starts}")
+
+        # Every tile costs a generation pass, so none may be droppable. Dropping
+        # one has to break either coverage or the minimum overlap the blend needs;
+        # coverage alone is not the test, since a tile can be needed purely to
+        # keep its neighbours close enough to cross-fade.
+        droppable_positions = []
+        for candidate_index in range(len(starts)):
+            remaining_starts = [start for index, start in enumerate(starts)
+                                if index != candidate_index]
+            remaining = np.zeros(awkward_length, dtype=bool)
+            for start in remaining_starts:
+                remaining[start:start + 832] = True
+            keeps_overlap = all(832 - (second - first) >= 128
+                                for first, second in zip(remaining_starts,
+                                                         remaining_starts[1:]))
+            if np.all(remaining) and keeps_overlap:
+                droppable_positions.append(starts[candidate_index])
+        check(f"a {awkward_length}px canvas wastes no tile",
+              not droppable_positions,
+              f"tiles at {droppable_positions} could be dropped from {starts}")
+
+    non_advancing_rejected = False
+    try:
+        tile_start_positions_covering_length(2048, 128, 128)
+    except ValueError:
+        non_advancing_rejected = True
+    check("an overlap that leaves no stride is refused",
+          non_advancing_rejected)
+
+    # Blending must stay exact when the clamped last tile overlaps more than the
+    # feather width, since the feather ramp no longer matches the real overlap.
+    awkward_width, awkward_height = 2048, 1500
+    awkward_boxes = covering_grid_tile_boxes(awkward_width, awkward_height,
+                                             832, 1216, 128)
+    check("a covering grid keeps every tile at the requested size",
+          all(box[2] - box[0] == 832 and box[3] - box[1] == 1216 for box in awkward_boxes),
+          f"got {awkward_boxes}")
+    check("a covering grid reaches both far edges exactly",
+          max(box[2] for box in awkward_boxes) == awkward_width
+          and max(box[3] for box in awkward_boxes) == awkward_height)
+
+    awkward_canvas = vertical_gradient_image(awkward_width, awkward_height)
+    awkward_reassembled = blend_tiles_into_canvas(
+        [awkward_canvas.crop(box) for box in awkward_boxes], awkward_boxes,
+        awkward_width, awkward_height, 128)
+    awkward_difference = int(np.max(np.abs(
+        np.asarray(awkward_reassembled, dtype=np.int16)
+        - np.asarray(awkward_canvas, dtype=np.int16))))
+    check("blending an unevenly tiled canvas is still exact",
+          awkward_difference <= 1,
+          f"largest per-channel difference was {awkward_difference} "
+          f"across {len(awkward_boxes)} tiles")
 
     print()
     if failures:

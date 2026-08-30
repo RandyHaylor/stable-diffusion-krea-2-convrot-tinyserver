@@ -284,7 +284,10 @@ button.danger{background:#49252a;border-color:#813942}
 
     <div class="fields two">
       <div><label for="hires_upscaler">Hires upscaler</label><div class="combo" data-field="hires_upscaler"></div></div>
+      <div><label for="hires_tiling" title="Render the hires pass as overlapping tiles instead of inside the request. Each tile is the main pass's own resolution, so a target too large for one attention sequence becomes reachable. The cost is the latent continuity the in-request pass keeps: tiling decodes the first stage, resamples it up and repaints it, so it round trips through the VAE and runs one request per tile.">Hires tiling</label><div class="combo" data-field="hires_tiling"></div></div>
+      <div><label for="hires_tile_overlap" title="How far neighbouring hires tiles share, in pixels of the target. The blend cross-fades across this band, so a wider overlap hides a disagreement between tiles over more pixels, at the cost of more tiles to cover the same target.">Hires tile overlap</label><div class="combo" data-field="hires_tile_overlap"></div></div>
     </div>
+    <div id="hiresTilingNotice" class="hires-variation-notice" hidden></div>
   </div>
 
   <div class="fields two">
@@ -395,11 +398,13 @@ const COMBO_FIELDS = {
   grounding_px:    {value:'768', step:64,   options:['384','512','640','768']},
   fit_mode:        {value:'fit', options:['fit','crop']},
   img2img_source_vision_grounding_size: {value:'1024', options:['auto','384','512','768','1024','1215','1536','2048']},
+  hires_tiling:       {value:'off', options:['off','on']},
+  hires_tile_overlap: {value:'128', step:16, options:['64','96','128','192','256']},
 };
-const NUMERIC_FIELDS = ['seed','steps','cfg','flow_shift','pag_scale','pag_start','pag_end','hires_steps','hires_denoise','vae_tile_size','img2img_denoise','img2img_noise_multiplier','grounding_px','beta_schedule_alpha','beta_schedule_beta','hires_noise_multiplier'];
+const NUMERIC_FIELDS = ['seed','steps','cfg','flow_shift','pag_scale','pag_start','pag_end','hires_steps','hires_denoise','vae_tile_size','img2img_denoise','img2img_noise_multiplier','grounding_px','beta_schedule_alpha','beta_schedule_beta','hires_noise_multiplier','hires_tile_overlap'];
 const TEXT_FIELDS = ['sampler','scheduler','hires_upscaler','extra_sample_args','pag_layers','fit_mode',
   'hires_prompt','hires_prompt_mode','hires_negative_prompt','hires_negative_prompt_mode','stage_one_wd14_tags','hires_vision_source',
-  'img2img_source_vision_grounding_size'];
+  'img2img_source_vision_grounding_size','hires_tiling'];
 
 let openComboList = null;
 
@@ -818,9 +823,38 @@ function refreshReferenceFidelityVramNotices(){
   });
 }
 
+function tileStartCountCoveringLength(canvasLength, tileLength, minimumOverlap){
+  // Mirrors tile_start_positions_covering_length: the fewest tiles whose stride
+  // reaches the far edge, then spread evenly.
+  const stride = tileLength - minimumOverlap;
+  if (stride <= 0 || canvasLength <= tileLength) return 1;
+  return Math.ceil((canvasLength - tileLength) / stride) + 1;
+}
+
+function refreshHiresTilingNotice(){
+  const notice = $('hiresTilingNotice');
+  if (!notice) return;
+  const [width, height] = splitResolution($('resolution').value);
+  const [hiresWidth, hiresHeight] = splitResolution($('hires_resolution').value);
+  const tileWidth = Math.min(width, hiresWidth);
+  const tileHeight = Math.min(height, hiresHeight);
+  const overlap = Math.min(Number($('hires_tile_overlap').value) || 128,
+                           Math.max(1, Math.floor(tileWidth / 2)),
+                           Math.max(1, Math.floor(tileHeight / 2)));
+  const columns = tileStartCountCoveringLength(hiresWidth, tileWidth, overlap);
+  const rows = tileStartCountCoveringLength(hiresHeight, tileHeight, overlap);
+  const tileCount = columns * rows;
+  const tilingRequested = $('hires').checked && $('hires_tiling').value === 'on';
+  notice.hidden = !(tilingRequested && tileCount > 1);
+  notice.textContent =
+    `Hires tiling: ${columns}x${rows} = ${tileCount} passes of ${tileWidth}x${tileHeight}, ` +
+    `overlapping ${overlap}px. One request per tile, and no latent continuity.`;
+}
+
 function refreshNoticesThatDependOnStageSettings(){
   refreshHiresVariationNotice();
   refreshReferenceFidelityVramNotices();
+  refreshHiresTilingNotice();
 }
 
 function collectParams(){
@@ -930,6 +964,8 @@ function formatJobDetails(params){
       ? p.stage_one_wd14_tags : ''],
     ['Hires reference size', p.hires && p.hires_reference_encode_size > 0
       ? p.hires_reference_encode_size : ''],
+    ['Hires tiling', p.hires && p.hires_tiling === 'on'
+      ? `on, ${p.hires_tile_overlap ?? 128}px overlap` : ''],
     ['Detected WD14 tags', (p.wd14_tags || []).join(' | ')],
     ['VAE tile', p.vae_tile_size ?? ''],
   ];
@@ -1017,6 +1053,8 @@ function loadParamsIntoForm(p){
   // area sizing, so they reload as auto rather than taking the current default.
   $('img2img_source_vision_grounding_size').value =
     p.img2img_source_vision_grounding_size || 'auto';
+  $('hires_tiling').value = p.hires_tiling || 'off';
+  $('hires_tile_overlap').value = p.hires_tile_overlap ?? 128;
   $('hires').checked = !!p.hires;
   $('save_lowres').checked = !!p.save_lowres;
   $('pag_enabled').checked = !!p.pag_enabled;

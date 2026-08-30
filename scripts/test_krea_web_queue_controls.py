@@ -15,7 +15,10 @@ import tempfile
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from io import BytesIO
 from pathlib import Path
+
+from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -53,6 +56,13 @@ STUB_CAPABILITIES = {
 }
 
 
+def solid_png_base64(width: int, height: int) -> str:
+    """A PNG of exactly the requested size, so returned images can be recombined."""
+    buffer = BytesIO()
+    Image.new("RGB", (max(1, width), max(1, height)), (40, 90, 140)).save(buffer, format="PNG")
+    return base64.b64encode(buffer.getvalue()).decode("ascii")
+
+
 class StubKreaBackendHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802 - http.server API
         if self.path == "/sdcpp/v1/capabilities":
@@ -79,9 +89,10 @@ class StubKreaBackendHandler(BaseHTTPRequestHandler):
                     "first_stage": {"output_format": "png", "b64_json": ONE_PIXEL_PNG_BASE64},
                 })
                 return
-            images = [{"index": 0, "b64_json": ONE_PIXEL_PNG_BASE64}]
+            rendered = solid_png_base64(job["width"], job["height"])
+            images = [{"index": 0, "b64_json": rendered}]
             if job["returns_lowres"]:
-                images.append({"index": 1, "b64_json": ONE_PIXEL_PNG_BASE64})
+                images.append({"index": 1, "b64_json": rendered})
             self.respond_with_json({"id": job_id, "status": "completed",
                                     "result": {"output_format": "png", "images": images}})
             return
@@ -111,6 +122,10 @@ class StubKreaBackendHandler(BaseHTTPRequestHandler):
                 "awaits_input": awaits_input,
                 "input_supplied": False,
                 "returns_lowres": returns_lowres,
+                # The tiled hires path recombines returned images by their boxes,
+                # so a stub that ignored the requested size could not be assembled.
+                "width": int(request_body.get("width", 1) or 1),
+                "height": int(request_body.get("height", 1) or 1),
             }
             self.respond_with_json({"id": job_id, "poll_url": f"/sdcpp/v1/jobs/{job_id}"})
             return
@@ -553,6 +568,43 @@ def main() -> int:
           find_generation_request_for_prompt("img2img-vision-defaulted").get("ref_image_args")
           == "vlm_resize_mode=longest_side,vlm_size=1024",
           f"got {find_generation_request_for_prompt('img2img-vision-defaulted').get('ref_image_args')!r}")
+
+    tiled_hires_params = build_job_params("hires-tiled")
+    tiled_hires_params["hires"] = True
+    tiled_hires_params["width"] = 64
+    tiled_hires_params["height"] = 64
+    tiled_hires_params["hires_width"] = 112
+    tiled_hires_params["hires_height"] = 112
+    tiled_hires_params["hires_tiling"] = "on"
+    tiled_hires_params["hires_tile_overlap"] = 16
+    tiled_hires_job = run_job_and_wait(tiled_hires_params, "hires-tiled")
+    tiled_hires_requests = find_all_generation_requests_for_prompt("hires-tiled")
+    check("a tiled hires job sends one first stage request plus one per tile",
+          len(tiled_hires_requests) == 1 + 4,
+          f"got {len(tiled_hires_requests)} request(s) of sizes "
+          f"{[(r.get('width'), r.get('height')) for r in tiled_hires_requests]}")
+    check("the tiled hires first stage carries no native hires block",
+          "hires" not in tiled_hires_requests[0],
+          "tiling replaces the in-request hires rather than running alongside it")
+    check("every tile request is exactly the main pass resolution",
+          all(request.get("width") == 64 and request.get("height") == 64
+              for request in tiled_hires_requests[1:]),
+          "the tile size is what the main pass already proved fits")
+    check("every tile request refines a supplied image rather than starting from noise",
+          all("init_image" in request and request.get("strength")
+              for request in tiled_hires_requests[1:]))
+    check("no tile request asks the runtime for its own hires pass",
+          all("hires" not in request for request in tiled_hires_requests[1:]),
+          "a nested hires inside a tile would double the upscale")
+    tiled_hires_outputs = tiled_hires_job.get("outputs") or []
+    check("a tiled hires job returns one recombined image",
+          len(tiled_hires_outputs) == 1,
+          f"got {tiled_hires_outputs}")
+    if tiled_hires_outputs:
+        recombined = Image.open(krea_web.OUTPUT_DIR / tiled_hires_outputs[-1])
+        check("the recombined image is exactly the requested hires size",
+              recombined.size == (112, 112),
+              f"got {recombined.size}")
 
     no_vision_params = build_job_params("img2img-without-vision")
     no_vision_params["source_image"] = uploaded_source["name"]

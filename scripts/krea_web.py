@@ -28,6 +28,12 @@ import uvicorn
 
 import wd14_tagging
 from hires_staging import hires_settings_vary_from_main, select_loras_for_stage
+from hires_tiling import (
+    describe_hires_tiling_plan,
+    hires_tile_boxes_for_params,
+    renders_hires_by_tiling,
+)
+from tiled_refine import blend_tiles_into_canvas
 from image_metadata import cached_civitai_hash, embed_generation_metadata
 from krea2_edit_request import (
     krea2_edit_native_args_fields,
@@ -535,6 +541,30 @@ class QueueManager:
             }
 
         stage = "krea-web-highres" if hires_enabled else "krea-web"
+
+        if renders_hires_by_tiling(p):
+            # Tiling repaints decoded pixels, so the first stage has to be rendered
+            # and saved on its own before any tile can be cut from it.
+            first_stage_names = self.run_single_backend_generation(
+                p,
+                hires=False,
+                prefix=f"krea-web-lowres-{job['id']}",
+                tag_groups=main_tag_groups,
+                vlm_image_names=stage_one_vision_images)
+            tiled_names = self.render_hires_by_tiling(
+                p, first_stage_names[0], f"{stage}-{job['id']}",
+                compose_hires_prompt(p["prompt"], str(p.get("hires_prompt", "")),
+                                     str(p.get("hires_prompt_mode", "append")),
+                                     hires_image_tag_groups),
+                compose_hires_prompt(str(p.get("negative_prompt", "")),
+                                     str(p.get("hires_negative_prompt", "")),
+                                     str(p.get("hires_negative_prompt_mode", "append")), []))
+            if p.get("save_lowres"):
+                return first_stage_names + tiled_names
+            for discarded_name in first_stage_names:
+                (OUTPUT_DIR / Path(discarded_name).name).unlink(missing_ok=True)
+            return tiled_names
+
         return self.run_single_backend_generation(
             p,
             hires=hires_enabled,
@@ -676,6 +706,90 @@ class QueueManager:
             (OUTPUT_DIR / name).write_bytes(embed_generation_metadata(image_bytes, metadata_payload))
             names.append(name)
         return names
+
+    def render_hires_by_tiling(self, p: dict, first_stage_name: str, prefix: str,
+                               hires_prompt: str, hires_negative_prompt: str) -> list[str]:
+        """Repaint an upscaled first stage as overlapping tiles and recombine them.
+
+        This is the hires path for targets the in-request latent hires cannot fit.
+        The first stage is resampled up to the full target and each tile is
+        repainted from those resampled pixels, so the detail comes from the
+        repaint rather than from the resampler. The cost is the latent continuity
+        the in-request path keeps: this one round trips through the VAE.
+
+        Every tile is its own request, so unlike the in-request hires this path
+        can honour the per-stage LoRA selection. A hires selection that is empty
+        falls back to the main one rather than silently dropping every LoRA, which
+        would leave a turbo checkpoint sampling far too few steps.
+        """
+        tile_boxes = hires_tile_boxes_for_params(p)
+        plan = describe_hires_tiling_plan(p)
+        target_size = (int(p["hires_width"]), int(p["hires_height"]))
+        print(f"[web] tiled hires: {plan['columns']}x{plan['rows']} tiles of "
+              f"{plan['tile_width']}x{plan['tile_height']} overlapping "
+              f"{plan['overlap_pixels']}px into {target_size[0]}x{target_size[1]}", flush=True)
+
+        first_stage_image = Image.open(OUTPUT_DIR / Path(first_stage_name).name).convert("RGB")
+        resampled_canvas = first_stage_image.resize(target_size, Image.LANCZOS)
+
+        tile_loras = (select_loras_for_stage(p.get("extra_loras", []), "hires")
+                      or select_loras_for_stage(p.get("extra_loras", []), "main"))
+        refined_tiles = []
+        for index, box in enumerate(tile_boxes):
+            tile_source = resampled_canvas.crop(box)
+            tile_bytes = BytesIO()
+            tile_source.save(tile_bytes, format="PNG")
+            tile_payload = {
+                "sample_params": {
+                    "sample_method": p["sampler"], "scheduler": p["scheduler"],
+                    "sample_steps": int(p["hires_steps"]),
+                    "flow_shift": float(p["flow_shift"]),
+                    "extra_sample_args": extra_sample_args_including_scheduler_settings(p),
+                    "guidance": {"txt_cfg": float(p["cfg"])},
+                },
+                "vae_tiling_params": {"enabled": True,
+                                      "tile_size_x": int(p["vae_tile_size"]),
+                                      "tile_size_y": int(p["vae_tile_size"]),
+                                      "target_overlap": 0.5},
+                "prompt": hires_prompt,
+                "negative_prompt": hires_negative_prompt,
+                "width": tile_source.width,
+                "height": tile_source.height,
+                "seed": int(p["seed"]) + index,
+                "batch_count": 1,
+                "init_image": base64.b64encode(tile_bytes.getvalue()).decode("ascii"),
+                "strength": float(p["hires_denoise"]),
+            }
+            if tile_loras:
+                tile_payload["lora"] = [{"path": Path(lora["path"]).name,
+                                         "multiplier": lora["multiplier"],
+                                         "is_high_noise": False}
+                                        for lora in tile_loras]
+            print(f"[web] tiled hires tile {index + 1}/{len(tile_boxes)} at {box}", flush=True)
+            tile_result = self.run_generation_job(tile_payload, None)
+            tile_images = tile_result.get("images", [])
+            if not tile_images:
+                raise RuntimeError(f"tiled hires tile {index + 1} returned no images")
+            encoded = tile_images[0]
+            if encoded.startswith("data:"):
+                encoded = encoded.split(",", 1)[1]
+            refined_tiles.append(
+                Image.open(BytesIO(base64.b64decode(encoded))).convert("RGB"))
+
+        blended = blend_tiles_into_canvas(refined_tiles, tile_boxes,
+                                         target_size[0], target_size[1],
+                                         plan["overlap_pixels"])
+        blended_bytes = BytesIO()
+        blended.save(blended_bytes, format="PNG")
+
+        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        name = f"{prefix}-{datetime.now():%Y%m%d-%H%M%S}-0.png"
+        metadata_payload = {"ui_params": dict(p), "seed": int(p["seed"]),
+                            "prompt": hires_prompt, "negative_prompt": hires_negative_prompt,
+                            "hires_tiling_plan": plan}
+        (OUTPUT_DIR / name).write_bytes(
+            embed_generation_metadata(blended_bytes.getvalue(), metadata_payload))
+        return [name]
 
     def fetch_backend_capabilities(self, timeout: int = 10) -> dict:
         with urllib.request.urlopen(self.backend + "/sdcpp/v1/capabilities", timeout=timeout) as response:
