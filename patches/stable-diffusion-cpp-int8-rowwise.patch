@@ -1,5 +1,5 @@
 diff --git a/examples/common/common.cpp b/examples/common/common.cpp
-index 3581215..9a769a7 100644
+index 3581215..ec02544 100644
 --- a/examples/common/common.cpp
 +++ b/examples/common/common.cpp
 @@ -1954,6 +1954,7 @@ bool SDGenerationParams::from_json_str(
@@ -10,7 +10,7 @@ index 3581215..9a769a7 100644
      load_if_exists("embed_image_metadata", embed_image_metadata);
  
      if (j.contains("hires") && j["hires"].is_object()) {
-@@ -1979,6 +1980,15 @@ bool SDGenerationParams::from_json_str(
+@@ -1979,6 +1980,18 @@ bool SDGenerationParams::from_json_str(
          if (hires_json.contains("denoising_strength") && hires_json["denoising_strength"].is_number()) {
              hires_denoising_strength = hires_json["denoising_strength"];
          }
@@ -23,10 +23,13 @@ index 3581215..9a769a7 100644
 +        if (hires_json.contains("await_stage_input")) {
 +            hires_await_stage_input = hires_json["await_stage_input"];
 +        }
++        if (hires_json.contains("drop_reference_latents")) {
++            hires_drop_reference_latents = hires_json["drop_reference_latents"];
++        }
          if (hires_json.contains("custom_sigmas") && hires_json["custom_sigmas"].is_array()) {
              hires_custom_sigmas = hires_json["custom_sigmas"].get<std::vector<float>>();
          }
-@@ -1991,6 +2001,7 @@ bool SDGenerationParams::from_json_str(
+@@ -1991,6 +2004,7 @@ bool SDGenerationParams::from_json_str(
                                          sd_sample_params_t& target_params,
                                          std::string& target_extra_sample_args,
                                          std::vector<int>& target_skip_layers,
@@ -34,7 +37,7 @@ index 3581215..9a769a7 100644
                                          std::vector<float>* target_custom_sigmas) {
          if (sample_json.contains("sample_steps") && sample_json["sample_steps"].is_number_integer()) {
              target_params.sample_steps = sample_json["sample_steps"];
-@@ -2024,6 +2035,24 @@ bool SDGenerationParams::from_json_str(
+@@ -2024,6 +2038,24 @@ bool SDGenerationParams::from_json_str(
                  target_params.scheduler = tmp;
              }
          }
@@ -59,7 +62,7 @@ index 3581215..9a769a7 100644
          if (sample_json.contains("guidance") && sample_json["guidance"].is_object()) {
              const json& guidance_json = sample_json["guidance"];
              if (guidance_json.contains("txt_cfg") && guidance_json["txt_cfg"].is_number()) {
-@@ -2054,13 +2083,14 @@ bool SDGenerationParams::from_json_str(
+@@ -2054,13 +2086,14 @@ bool SDGenerationParams::from_json_str(
      };
  
      if (j.contains("sample_params") && j["sample_params"].is_object()) {
@@ -75,7 +78,7 @@ index 3581215..9a769a7 100644
                                   nullptr);
      }
  
-@@ -2108,6 +2138,14 @@ bool SDGenerationParams::from_json_str(
+@@ -2108,6 +2141,14 @@ bool SDGenerationParams::from_json_str(
          LOG_ERROR("invalid ref_images");
          return false;
      }
@@ -90,7 +93,7 @@ index 3581215..9a769a7 100644
      if (!parse_image_array_json_field(j, "control_frames", 3, width, height, control_frames)) {
          LOG_ERROR("invalid control_frames");
          return false;
-@@ -2507,6 +2545,11 @@ sd_img_gen_params_t SDGenerationParams::to_sd_img_gen_params_t() {
+@@ -2507,6 +2548,11 @@ sd_img_gen_params_t SDGenerationParams::to_sd_img_gen_params_t() {
  
      ref_image_views.clear();
      ref_image_views.reserve(ref_images.size());
@@ -102,7 +105,7 @@ index 3581215..9a769a7 100644
      for (auto& ref_image : ref_images) {
          ref_image_views.push_back(ref_image.get());
      }
-@@ -2521,6 +2564,10 @@ sd_img_gen_params_t SDGenerationParams::to_sd_img_gen_params_t() {
+@@ -2521,6 +2567,10 @@ sd_img_gen_params_t SDGenerationParams::to_sd_img_gen_params_t() {
      sample_params.guidance.slg.layer_count            = skip_layers.size();
      high_noise_sample_params.guidance.slg.layers      = high_noise_skip_layers.empty() ? nullptr : high_noise_skip_layers.data();
      high_noise_sample_params.guidance.slg.layer_count = high_noise_skip_layers.size();
@@ -113,7 +116,7 @@ index 3581215..9a769a7 100644
      sample_params.custom_sigmas                       = custom_sigmas.empty() ? nullptr : custom_sigmas.data();
      sample_params.custom_sigmas_count                 = static_cast<int>(custom_sigmas.size());
      sample_params.extra_sample_args                   = extra_sample_args.empty() ? nullptr : extra_sample_args.c_str();
-@@ -2564,6 +2611,8 @@ sd_img_gen_params_t SDGenerationParams::to_sd_img_gen_params_t() {
+@@ -2564,6 +2614,8 @@ sd_img_gen_params_t SDGenerationParams::to_sd_img_gen_params_t() {
      params.init_image          = init_image.get();
      params.ref_images          = ref_image_views.empty() ? nullptr : ref_image_views.data();
      params.ref_images_count    = static_cast<int>(ref_image_views.size());
@@ -122,7 +125,7 @@ index 3581215..9a769a7 100644
      params.ref_image_args      = ref_image_args.c_str();
      params.mask_image          = mask_image.get();
      params.width               = get_resolved_width();
-@@ -2590,6 +2639,8 @@ sd_img_gen_params_t SDGenerationParams::to_sd_img_gen_params_t() {
+@@ -2590,6 +2642,8 @@ sd_img_gen_params_t SDGenerationParams::to_sd_img_gen_params_t() {
      params.hires.target_height       = hires_height;
      params.hires.steps               = hires_steps;
      params.hires.denoising_strength  = hires_denoising_strength;
@@ -131,7 +134,7 @@ index 3581215..9a769a7 100644
      params.hires.upscale_tile_size   = hires_upscale_tile_size;
      params.hires.custom_sigmas       = hires_custom_sigmas.empty() ? nullptr : hires_custom_sigmas.data();
      params.hires.custom_sigmas_count = static_cast<int>(hires_custom_sigmas.size());
-@@ -2619,6 +2670,11 @@ sd_vid_gen_params_t SDGenerationParams::to_sd_vid_gen_params_t() {
+@@ -2619,6 +2673,11 @@ sd_vid_gen_params_t SDGenerationParams::to_sd_vid_gen_params_t() {
  
      ref_image_views.clear();
      ref_image_views.reserve(ref_images.size());
@@ -143,7 +146,7 @@ index 3581215..9a769a7 100644
      for (auto& image : ref_images) {
          ref_image_views.push_back(image.get());
      }
-@@ -2650,6 +2706,10 @@ sd_vid_gen_params_t SDGenerationParams::to_sd_vid_gen_params_t() {
+@@ -2650,6 +2709,10 @@ sd_vid_gen_params_t SDGenerationParams::to_sd_vid_gen_params_t() {
      sample_params.guidance.slg.layer_count            = skip_layers.size();
      high_noise_sample_params.guidance.slg.layers      = high_noise_skip_layers.empty() ? nullptr : high_noise_skip_layers.data();
      high_noise_sample_params.guidance.slg.layer_count = high_noise_skip_layers.size();
@@ -154,7 +157,7 @@ index 3581215..9a769a7 100644
      sample_params.custom_sigmas                       = custom_sigmas.empty() ? nullptr : custom_sigmas.data();
      sample_params.custom_sigmas_count                 = static_cast<int>(custom_sigmas.size());
      sample_params.extra_sample_args                   = extra_sample_args.empty() ? nullptr : extra_sample_args.c_str();
-@@ -2692,6 +2752,8 @@ sd_vid_gen_params_t SDGenerationParams::to_sd_vid_gen_params_t() {
+@@ -2692,6 +2755,8 @@ sd_vid_gen_params_t SDGenerationParams::to_sd_vid_gen_params_t() {
      params.hires.target_height       = hires_height;
      params.hires.steps               = hires_steps;
      params.hires.denoising_strength  = hires_denoising_strength;
@@ -164,7 +167,7 @@ index 3581215..9a769a7 100644
      params.hires.custom_sigmas       = hires_custom_sigmas.empty() ? nullptr : hires_custom_sigmas.data();
      params.hires.custom_sigmas_count = static_cast<int>(hires_custom_sigmas.size());
 diff --git a/examples/common/common.h b/examples/common/common.h
-index 34b4a01..68d882f 100644
+index 34b4a01..4ad4a73 100644
 --- a/examples/common/common.h
 +++ b/examples/common/common.h
 @@ -223,6 +223,8 @@ struct SDGenerationParams {
@@ -176,17 +179,18 @@ index 34b4a01..68d882f 100644
  
      std::vector<float> custom_sigmas;
  
-@@ -263,6 +265,9 @@ struct SDGenerationParams {
+@@ -263,6 +265,10 @@ struct SDGenerationParams {
      int hires_height               = 0;
      int hires_steps                = 0;
      float hires_denoising_strength = 0.7f;
 +    float hires_noise_multiplier   = 1.0f;
 +    bool hires_return_lowres_image = false;
 +    bool hires_await_stage_input   = false;
++    bool hires_drop_reference_latents = false;
      int hires_upscale_tile_size    = 128;
      std::vector<float> hires_custom_sigmas;
  
-@@ -278,6 +283,7 @@ struct SDGenerationParams {
+@@ -278,6 +284,7 @@ struct SDGenerationParams {
      SDImageOwner init_image;
      SDImageOwner end_image;
      std::vector<SDImageOwner> ref_images;
@@ -194,7 +198,7 @@ index 34b4a01..68d882f 100644
      std::vector<std::vector<SDImageOwner>> ref_videos;
      std::vector<SDAudioOwner> ref_video_audios;
      std::vector<SDAudioOwner> ref_audios;
-@@ -289,6 +295,7 @@ struct SDGenerationParams {
+@@ -289,6 +296,7 @@ struct SDGenerationParams {
  
      // Backing storage for sd_img_gen_params_t view fields.
      std::vector<sd_image_t> ref_image_views;
@@ -530,7 +534,7 @@ index 7253dbf..73850c6 100644
          AsyncJobManager& manager = *runtime->async_job_manager;
          std::lock_guard<std::mutex> lock(manager.mutex);
 diff --git a/include/stable-diffusion.h b/include/stable-diffusion.h
-index bab62ba..1c14c57 100644
+index bab62ba..7f1f41a 100644
 --- a/include/stable-diffusion.h
 +++ b/include/stable-diffusion.h
 @@ -266,6 +266,15 @@ typedef struct {
@@ -586,7 +590,7 @@ index bab62ba..1c14c57 100644
  typedef struct {
      bool enabled;
      enum sd_hires_upscaler_t upscaler;
-@@ -364,9 +396,20 @@ typedef struct {
+@@ -364,9 +396,24 @@ typedef struct {
      int target_height;
      int steps;
      float denoising_strength;
@@ -601,13 +605,17 @@ index bab62ba..1c14c57 100644
      float* custom_sigmas;
      int custom_sigmas_count;
 +
++    // Sample the hires pass without the reference latents the first stage
++    // used. Their tokens are the largest single cost at a big target, and a
++    // refinement pass does not always need them.
++    bool drop_reference_latents;
 +    sd_hires_stage_input_t stage_input;
 +    sd_hires_stage_input_cb_t stage_input_cb;
 +    void* stage_input_cb_user_data;
  } sd_hires_params_t;
  
  typedef struct {
-@@ -378,6 +421,10 @@ typedef struct {
+@@ -378,6 +425,10 @@ typedef struct {
      sd_image_t init_image;
      sd_image_t* ref_images;
      int ref_images_count;
@@ -1078,7 +1086,7 @@ index 69bcaa1..5eeda8d 100644
                  tensor_storage.ne[0]  = tensor_storage.ne[1];
                  tensor_storage.ne[1]  = 1;
 diff --git a/src/stable-diffusion.cpp b/src/stable-diffusion.cpp
-index 7370f6a..51079b4 100644
+index 7370f6a..ed50320 100644
 --- a/src/stable-diffusion.cpp
 +++ b/src/stable-diffusion.cpp
 @@ -2516,6 +2516,7 @@ public:
@@ -1300,20 +1308,21 @@ index 7370f6a..51079b4 100644
          return params;
      }
  };
-@@ -3546,7 +3632,12 @@ void sd_hires_params_init(sd_hires_params_t* hires_params) {
+@@ -3546,7 +3632,13 @@ void sd_hires_params_init(sd_hires_params_t* hires_params) {
      hires_params->target_height       = 0;
      hires_params->steps               = 0;
      hires_params->denoising_strength  = 0.7f;
 +    hires_params->noise_multiplier    = 1.0f;
      hires_params->upscale_tile_size   = 128;
-+    hires_params->return_lowres_image = false;
++    hires_params->return_lowres_image     = false;
++    hires_params->drop_reference_latents  = false;
 +    hires_params->stage_input                = {nullptr, nullptr, nullptr, 0};
 +    hires_params->stage_input_cb             = nullptr;
 +    hires_params->stage_input_cb_user_data   = nullptr;
      hires_params->custom_sigmas       = nullptr;
      hires_params->custom_sigmas_count = 0;
  }
-@@ -3669,6 +3760,12 @@ void sd_sample_params_init(sd_sample_params_t* sample_params) {
+@@ -3669,6 +3761,12 @@ void sd_sample_params_init(sd_sample_params_t* sample_params) {
      sample_params->custom_sigmas               = nullptr;
      sample_params->custom_sigmas_count         = 0;
      sample_params->flow_shift                  = INFINITY;
@@ -1326,7 +1335,7 @@ index 7370f6a..51079b4 100644
      sample_params->extra_sample_args           = nullptr;
  }
  
-@@ -3686,6 +3783,11 @@ char* sd_sample_params_to_str(const sd_sample_params_t* sample_params) {
+@@ -3686,6 +3784,11 @@ char* sd_sample_params_to_str(const sd_sample_params_t* sample_params) {
               "slg.layer_start: %.2f, "
               "slg.layer_end: %.2f, "
               "slg.scale: %.2f, "
@@ -1338,7 +1347,7 @@ index 7370f6a..51079b4 100644
               "scheduler: %s, "
               "sample_method: %s, "
               "sample_steps: %d, "
-@@ -3702,6 +3804,11 @@ char* sd_sample_params_to_str(const sd_sample_params_t* sample_params) {
+@@ -3702,6 +3805,11 @@ char* sd_sample_params_to_str(const sd_sample_params_t* sample_params) {
               sample_params->guidance.slg.layer_start,
               sample_params->guidance.slg.layer_end,
               sample_params->guidance.slg.scale,
@@ -1350,7 +1359,7 @@ index 7370f6a..51079b4 100644
               sd_scheduler_name(sample_params->scheduler),
               sd_sample_method_name(sample_params->sample_method),
               sample_params->sample_steps,
-@@ -3718,10 +3825,12 @@ void sd_img_gen_params_init(sd_img_gen_params_t* sd_img_gen_params) {
+@@ -3718,10 +3826,12 @@ void sd_img_gen_params_init(sd_img_gen_params_t* sd_img_gen_params) {
      sd_sample_params_init(&sd_img_gen_params->sample_params);
      sd_img_gen_params->clip_skip           = -1;
      sd_img_gen_params->ref_images_count    = 0;
@@ -1364,7 +1373,7 @@ index 7370f6a..51079b4 100644
      sd_img_gen_params->seed                = -1;
      sd_img_gen_params->batch_count         = 1;
      sd_img_gen_params->control_strength    = 0.9f;
-@@ -4401,6 +4510,7 @@ struct ImageGenerationLatents {
+@@ -4401,6 +4511,7 @@ struct ImageGenerationLatents {
      sd::Tensor<float> video_positions;
      sd::Tensor<float> control_image;
      std::vector<sd::Tensor<float>> ref_images;
@@ -1372,7 +1381,7 @@ index 7370f6a..51079b4 100644
      std::vector<sd::Tensor<float>> ref_latents;
      std::vector<sd::Tensor<float>> reference_audio_latents;
      std::vector<MiniMaxH3ReferenceBlock> minimax_reference_blocks;
-@@ -5061,6 +5171,14 @@ static std::optional<ImageGenerationLatents> prepare_image_generation_latents(sd
+@@ -5061,6 +5172,14 @@ static std::optional<ImageGenerationLatents> prepare_image_generation_latents(sd
                                                            image_channels));
      }
  
@@ -1387,7 +1396,7 @@ index 7370f6a..51079b4 100644
      if (ref_images.empty() && sd_version_is_unet_edit(sd_ctx->sd->version)) {
          LOG_WARN("This model needs at least one reference image; using an empty reference");
          ref_images.push_back(sd::zeros<float>({request->width, request->height, image_channels, 1}));
-@@ -5072,9 +5190,15 @@ static std::optional<ImageGenerationLatents> prepare_image_generation_latents(sd
+@@ -5072,9 +5191,15 @@ static std::optional<ImageGenerationLatents> prepare_image_generation_latents(sd
          LOG_INFO("EDIT mode");
      }
  
@@ -1404,7 +1413,7 @@ index 7370f6a..51079b4 100644
              continue;
          }
          sd::Tensor<float> ref_latent;
-@@ -5096,6 +5220,21 @@ static std::optional<ImageGenerationLatents> prepare_image_generation_latents(sd
+@@ -5096,6 +5221,21 @@ static std::optional<ImageGenerationLatents> prepare_image_generation_latents(sd
              vae_height = round(vae_height / factor) * factor;
              vae_width  = round(vae_width / factor) * factor;
  
@@ -1426,7 +1435,7 @@ index 7370f6a..51079b4 100644
              auto resized_ref_img = sd::ops::interpolate(ref_images[i],
                                                          {static_cast<int>(vae_width),
                                                           static_cast<int>(vae_height),
-@@ -5198,6 +5337,7 @@ static std::optional<ImageGenerationLatents> prepare_image_generation_latents(sd
+@@ -5198,6 +5338,7 @@ static std::optional<ImageGenerationLatents> prepare_image_generation_latents(sd
      latents.img_uncond_concat_latent = std::move(img_uncond_concat_latent);
      latents.control_image            = std::move(control_image_tensor);
      latents.ref_images               = std::move(ref_images);
@@ -1434,7 +1443,7 @@ index 7370f6a..51079b4 100644
      latents.ref_latents              = std::move(ref_latents);
  
      if (sd_version_is_inpaint(sd_ctx->sd->version)) {
-@@ -5227,6 +5367,7 @@ static std::optional<ImageGenerationEmbeds> prepare_image_generation_embeds(sd_c
+@@ -5227,6 +5368,7 @@ static std::optional<ImageGenerationEmbeds> prepare_image_generation_embeds(sd_c
      if (ref_image_params.pass_to_vlm) {
          condition_params.ref_images = &latents->ref_images;
      }
@@ -1442,7 +1451,7 @@ index 7370f6a..51079b4 100644
  
      condition_params.ref_image_params = ref_image_params;
  
-@@ -5309,6 +5450,60 @@ static std::optional<ImageGenerationEmbeds> prepare_image_generation_embeds(sd_c
+@@ -5309,6 +5451,60 @@ static std::optional<ImageGenerationEmbeds> prepare_image_generation_embeds(sd_c
      return embeds;
  }
  
@@ -1503,7 +1512,7 @@ index 7370f6a..51079b4 100644
  static sd_image_t* decode_image_outputs(sd_ctx_t* sd_ctx,
                                          const GenerationRequest& request,
                                          const std::vector<sd::Tensor<float>>& final_latents,
-@@ -5698,6 +5893,7 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
+@@ -5698,6 +5894,7 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
                                                     latents.control_image,
                                                     request.control_strength,
                                                     request.guidance,
@@ -1511,7 +1520,7 @@ index 7370f6a..51079b4 100644
                                                     plan.eta,
                                                     request.shifted_timestep,
                                                     plan.sample_method,
-@@ -5734,11 +5930,56 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
+@@ -5734,11 +5931,56 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
          return false;
      }
  
@@ -1568,7 +1577,17 @@ index 7370f6a..51079b4 100644
          LOG_INFO("hires fix: upscaling to %dx%d", request.hires.target_width, request.hires.target_height);
  
          std::unique_ptr<UpscalerGGML> hires_upscaler;
-@@ -5819,6 +6060,7 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
+@@ -5777,6 +6019,9 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
+                  hires_sigma_sched.size(),
+                  request.hires.custom_sigmas_count > 0 ? ", custom_sigmas=true" : "");
+ 
++        static const std::vector<sd::Tensor<float>> no_reference_latents;
++        const std::vector<sd::Tensor<float>>& hires_ref_latents =
++            request.hires.drop_reference_latents ? no_reference_latents : latents.ref_latents;
+         std::vector<sd::Tensor<float>> hires_final_latents;
+         int64_t hires_denoise_start = ggml_time_ms();
+         for (int b = 0; b < (int)final_latents.size(); b++) {
+@@ -5819,20 +6064,23 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
                                                              latents.control_image,
                                                              request.control_strength,
                                                              request.guidance,
@@ -1576,7 +1595,14 @@ index 7370f6a..51079b4 100644
                                                              plan.eta,
                                                              request.shifted_timestep,
                                                              plan.sample_method,
-@@ -5832,7 +6074,9 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
+                                                             sd_ctx->sd->is_flow_denoiser(),
+                                                             plan.extra_sample_args,
+                                                             hires_sigma_sched,
+-                                                            latents.ref_latents,
++                                                            hires_ref_latents,
+                                                             ref_image_params,
+                                                             hires_denoise_mask,
+                                                             sd::Tensor<float>(),
                                                              1.f,
                                                              0,
                                                              static_cast<float>(request.fps),
@@ -1587,7 +1613,7 @@ index 7370f6a..51079b4 100644
              int64_t hires_sample_end   = ggml_time_ms();
              if (!x_0.empty()) {
                  LOG_INFO("hires sampling %d/%d completed, taking %.2fs",
-@@ -5861,6 +6105,24 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
+@@ -5861,6 +6109,24 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
          return false;
      }
  
@@ -1612,7 +1638,7 @@ index 7370f6a..51079b4 100644
      sd_ctx->sd->lora_stat();
  
      int64_t t1 = ggml_time_ms();
-@@ -6952,6 +7214,7 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
+@@ -6952,6 +7218,7 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
                                                             sd::Tensor<float>(),
                                                             0.f,
                                                             request.high_noise_guidance,
@@ -1620,7 +1646,7 @@ index 7370f6a..51079b4 100644
                                                             plan.high_noise_eta,
                                                             request.shifted_timestep,
                                                             plan.high_noise_sample_method,
-@@ -6994,6 +7257,7 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
+@@ -6994,6 +7261,7 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
                                                          sd::Tensor<float>(),
                                                          0.f,
                                                          sd_vid_gen_params->sample_params.guidance,
@@ -1628,7 +1654,7 @@ index 7370f6a..51079b4 100644
                                                          plan.eta,
                                                          sd_vid_gen_params->sample_params.shifted_timestep,
                                                          plan.sample_method,
-@@ -7132,6 +7396,7 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
+@@ -7132,6 +7400,7 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
                                              sd::Tensor<float>(),
                                              0.f,
                                              sd_vid_gen_params->sample_params.guidance,

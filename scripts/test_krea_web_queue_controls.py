@@ -33,6 +33,9 @@ stub_state = {
     "generation_paths": [],
     "cancel_requests": 0,
     "cancel_flag_set": threading.Event(),
+    "jobs": {},
+    "next_job_id": 0,
+    "hires_inputs": [],
 }
 
 
@@ -51,6 +54,34 @@ class StubKreaBackendHandler(BaseHTTPRequestHandler):
         if self.path == "/sdcpp/v1/capabilities":
             self.respond_with_json(STUB_CAPABILITIES)
             return
+
+        if self.path.startswith("/sdcpp/v1/jobs/"):
+            job_id = self.path.rsplit("/", 1)[-1]
+            job = stub_state["jobs"].get(job_id)
+            if job is None:
+                self.send_error(404)
+                return
+            if stub_state["cancel_flag_set"].is_set():
+                stub_state["cancel_flag_set"].clear()
+                self.respond_with_json({"id": job_id, "status": "cancelled",
+                                        "error": {"message": "cancelled"}})
+                return
+            if time.monotonic() < job["ready_at"]:
+                self.respond_with_json({"id": job_id, "status": "generating"})
+                return
+            if job["awaits_input"] and not job["input_supplied"]:
+                self.respond_with_json({
+                    "id": job_id, "status": "awaiting_hires_input",
+                    "first_stage": {"output_format": "png", "b64_json": ONE_PIXEL_PNG_BASE64},
+                })
+                return
+            images = [{"index": 0, "b64_json": ONE_PIXEL_PNG_BASE64}]
+            if job["returns_lowres"]:
+                images.append({"index": 1, "b64_json": ONE_PIXEL_PNG_BASE64})
+            self.respond_with_json({"id": job_id, "status": "completed",
+                                    "result": {"output_format": "png", "images": images}})
+            return
+
         self.send_error(404)
 
     def do_POST(self) -> None:  # noqa: N802 - http.server API
@@ -63,20 +94,31 @@ class StubKreaBackendHandler(BaseHTTPRequestHandler):
             self.respond_with_json({"status": "cancelling"})
             return
 
-        if self.path in ("/sdapi/v1/txt2img", "/sdapi/v1/img2img"):
-            stub_state["generation_requests"].append(json.loads(raw_body))
+        if self.path == "/sdcpp/v1/img_gen":
+            request_body = json.loads(raw_body)
+            stub_state["generation_requests"].append(request_body)
             stub_state["generation_paths"].append(self.path)
-            deadline = time.monotonic() + STUB_GENERATION_SECONDS
-            while time.monotonic() < deadline:
-                if stub_state["cancel_flag_set"].is_set():
-                    stub_state["cancel_flag_set"].clear()
-                    self.respond_with_json({"images": [], "cancelled": True})
-                    return
-                time.sleep(0.05)
-            # Do not let a cancellation that raced the stub's completion leak
-            # into the next queued request.
-            stub_state["cancel_flag_set"].clear()
-            self.respond_with_json({"images": [ONE_PIXEL_PNG_BASE64]})
+            job_id = f"job_{stub_state['next_job_id']}"
+            stub_state["next_job_id"] += 1
+            awaits_input = bool(request_body.get("hires", {}).get("await_stage_input"))
+            returns_lowres = bool(request_body.get("hires", {}).get("return_lowres_image"))
+            stub_state["jobs"][job_id] = {
+                "ready_at": time.monotonic() + STUB_GENERATION_SECONDS,
+                "awaits_input": awaits_input,
+                "input_supplied": False,
+                "returns_lowres": returns_lowres,
+            }
+            self.respond_with_json({"id": job_id, "poll_url": f"/sdcpp/v1/jobs/{job_id}"})
+            return
+
+        if self.path.endswith("/hires-input"):
+            job_id = self.path.split("/")[-2]
+            stub_state["hires_inputs"].append(json.loads(raw_body))
+            job = stub_state["jobs"].get(job_id)
+            if job is not None:
+                job["input_supplied"] = True
+                job["ready_at"] = time.monotonic() + STUB_GENERATION_SECONDS
+            self.respond_with_json({"id": job_id, "status": "generating"})
             return
 
         self.send_error(404)
@@ -262,7 +304,7 @@ def main() -> int:
     check("queue count is zero after kill-all",
           client.get("/api/state", headers=session_headers).json()["queue_count"] == 0)
 
-    generated_prompts = [r["prompt"].split(" <sd_cpp_extra_args>")[0]
+    generated_prompts = [r["prompt"]
                          for r in stub_state["generation_requests"]]
     check("removed job never reached the backend", "second" not in generated_prompts,
           f"prompts={generated_prompts}")
@@ -281,7 +323,7 @@ def main() -> int:
           backend_options["limits"]["max_width"] == 4096)
 
     front_inserted_request = find_generation_request_for_prompt("third")
-    native_args = json.loads(front_inserted_request["prompt"].split("<sd_cpp_extra_args>", 1)[1].split("</sd_cpp_extra_args>", 1)[0])
+    native_args = front_inserted_request
     check("PAG settings are sent in native main-stage sample params",
           native_args["sample_params"].get("pag") == {
               "enabled": True, "scale": 0.8, "layers": [7, 9], "start": 0.1, "end": 0.9,
@@ -300,7 +342,7 @@ def main() -> int:
                              and j["status"] == "completed"), None),
                20, "beta-schedule job to complete")
     beta_schedule_request = find_generation_request_for_prompt("beta-schedule")
-    beta_native_args = json.loads(beta_schedule_request["prompt"].split("<sd_cpp_extra_args>", 1)[1].split("</sd_cpp_extra_args>", 1)[0])
+    beta_native_args = beta_schedule_request
     check("beta schedule alpha and beta are sent as extra sample args for the beta scheduler",
           beta_native_args["sample_params"]["extra_sample_args"] == "alpha=0.5,beta=0.7",
           f"extra_sample_args={beta_native_args['sample_params']['extra_sample_args']!r}")
@@ -329,16 +371,16 @@ def main() -> int:
                20, "krea2-edit job to complete")
     krea2_edit_request = find_generation_request_for_prompt("krea2-edit")
     check("krea2 edit sends every reference as an extra image",
-          len(krea2_edit_request.get("extra_images", [])) == 2,
-          f"extra_images count={len(krea2_edit_request.get('extra_images', []))}")
-    krea2_edit_native_args = json.loads(krea2_edit_request["prompt"].split("<sd_cpp_extra_args>", 1)[1].split("</sd_cpp_extra_args>", 1)[0])
+          len(krea2_edit_request.get("ref_images", [])) == 2,
+          f"ref_images count={len(krea2_edit_request.get('ref_images', []))}")
+    krea2_edit_native_args = krea2_edit_request
     check("krea2 edit selects the preset and one ref_boost per reference, in order",
           krea2_edit_native_args.get("ref_image_args")
           == "preset=krea2_edit,vlm_size=768,ref_boost=1,ref_boost=4",
           f"ref_image_args={krea2_edit_native_args.get('ref_image_args')!r}")
-    check("krea2 edit uses txt2img, since the target starts as pure noise",
-          stub_state["generation_paths"][-1] == "/sdapi/v1/txt2img",
-          f"path={stub_state['generation_paths'][-1]}")
+    check("krea2 edit sends no starting latent, since the target starts as pure noise",
+          "init_image" not in krea2_edit_request,
+          f"keys={sorted(krea2_edit_request)}")
     check("krea2 edit never sends init_images or denoising_strength",
           "init_images" not in krea2_edit_request and "denoising_strength" not in krea2_edit_request,
           f"keys={sorted(krea2_edit_request)}")
@@ -355,9 +397,7 @@ def main() -> int:
                              if (j["params"] or {}).get("prompt") == "krea2-edit-crop"
                              and j["status"] == "completed"), None),
                20, "krea2-edit-crop job to complete")
-    krea2_edit_crop_native_args = json.loads(
-        find_generation_request_for_prompt("krea2-edit-crop")["prompt"]
-        .split("<sd_cpp_extra_args>", 1)[1].split("</sd_cpp_extra_args>", 1)[0])
+    krea2_edit_crop_native_args = find_generation_request_for_prompt("krea2-edit-crop")
     check("the chosen reference fit mode reaches the runtime in the native args",
           krea2_edit_crop_native_args.get("ref_image_args")
           == "preset=krea2_edit,vlm_size=768,fit_mode=crop",
@@ -379,10 +419,9 @@ def main() -> int:
                20, "img2img-plain job to complete")
     plain_img2img_request = find_generation_request_for_prompt("img2img-plain")
     check("plain img2img sends the source only as an init image",
-          "init_images" in plain_img2img_request and "extra_images" not in plain_img2img_request,
+          "init_image" in plain_img2img_request and "ref_images" not in plain_img2img_request,
           f"keys={sorted(plain_img2img_request)}")
-    plain_img2img_native = json.loads(plain_img2img_request["prompt"]
-                                      .split("<sd_cpp_extra_args>", 1)[1].split("</sd_cpp_extra_args>", 1)[0])
+    plain_img2img_native = plain_img2img_request
     check("the img2img noise multiplier travels inside the native sample args, not a top-level field",
           "img2img_noise_multiplier=1"
           in plain_img2img_native["sample_params"].get("extra_sample_args", "")
@@ -406,12 +445,12 @@ def main() -> int:
                20, "source-tags-without-starting-latent job to complete")
     tags_without_latent_request = find_generation_request_for_prompt("source-tags-without-starting-latent")
     check("a source used only for tags never becomes the starting latent",
-          "init_images" not in tags_without_latent_request
-          and "denoising_strength" not in tags_without_latent_request,
+          "init_image" not in tags_without_latent_request
+          and "strength" not in tags_without_latent_request,
           f"keys={sorted(tags_without_latent_request)}")
-    check("a source used only for tags still runs as txt2img",
-          stub_state["generation_paths"][-1] == "/sdapi/v1/txt2img",
-          f"path={stub_state['generation_paths'][-1]}")
+    check("a source used only for tags sends no starting latent",
+          "init_image" not in tags_without_latent_request,
+          f"keys={sorted(tags_without_latent_request)}")
 
     unrouted_tag_params = build_job_params("img2img-tags-routed-nowhere")
     unrouted_tag_params["source_image"] = uploaded_source["name"]
@@ -428,7 +467,7 @@ def main() -> int:
           "neither routing box is ticked, so nothing reads the image")
     check("a source routed to no stage leaves the prompt exactly as typed",
           find_generation_request_for_prompt("img2img-tags-routed-nowhere")["prompt"]
-          .startswith("img2img-tags-routed-nowhere <sd_cpp_extra_args>"),
+          == "img2img-tags-routed-nowhere",
           "no tags may be appended when no stage asked for them")
 
     noisy_img2img_params = build_job_params("img2img-noise-multiplier")
@@ -441,15 +480,13 @@ def main() -> int:
                              if (j["params"] or {}).get("prompt") == "img2img-noise-multiplier"
                              and j["status"] == "completed"), None),
                20, "img2img-noise-multiplier job to complete")
-    noisy_img2img_native = json.loads(find_generation_request_for_prompt("img2img-noise-multiplier")["prompt"]
-                                      .split("<sd_cpp_extra_args>", 1)[1].split("</sd_cpp_extra_args>", 1)[0])
+    noisy_img2img_native = find_generation_request_for_prompt("img2img-noise-multiplier")
     check("an img2img noise multiplier above 1 reaches the runtime unclamped",
           "img2img_noise_multiplier=1.4"
           in noisy_img2img_native["sample_params"].get("extra_sample_args", ""),
           f"extra_sample_args={noisy_img2img_native['sample_params'].get('extra_sample_args')!r}")
 
-    txt2img_native = json.loads(find_generation_request_for_prompt("first")["prompt"]
-                                .split("<sd_cpp_extra_args>", 1)[1].split("</sd_cpp_extra_args>", 1)[0])
+    txt2img_native = find_generation_request_for_prompt("first")
     check("a run with no img2img source sends no img2img noise multiplier at all",
           "img2img_noise_multiplier" not in txt2img_native["sample_params"].get("extra_sample_args", ""),
           f"extra_sample_args={txt2img_native['sample_params'].get('extra_sample_args')!r}")
@@ -466,13 +503,12 @@ def main() -> int:
                20, "img2img-source-as-reference job to complete")
     referenced_source_request = find_generation_request_for_prompt("img2img-source-as-reference")
     check("the source image reaches the vision tower without becoming a DiT reference",
-          referenced_source_request.get("vlm_images") == referenced_source_request.get("init_images")
-          and "extra_images" not in referenced_source_request,
+          referenced_source_request.get("vlm_images") == [referenced_source_request.get("init_image")]
+          and "ref_images" not in referenced_source_request,
           f"vlm_images count={len(referenced_source_request.get('vlm_images', []))}")
-    check("sending the source as a reference keeps img2img rather than becoming an edit",
-          "denoising_strength" in referenced_source_request
-          and stub_state["generation_paths"][-1] == "/sdapi/v1/img2img",
-          f"path={stub_state['generation_paths'][-1]}")
+    check("a source used as the starting latent carries its denoise strength",
+          "strength" in referenced_source_request,
+          f"keys={sorted(referenced_source_request)}")
 
     source_vision_to_hires_params = build_job_params("source-vision-to-hires-only")
     source_vision_to_hires_params["source_image"] = uploaded_source["name"]
@@ -485,15 +521,15 @@ def main() -> int:
                              and j["status"] == "completed"), None),
                30, "source-vision-to-hires-only job to complete")
     source_vision_requests = find_all_generation_requests_for_prompt("source-vision-to-hires-only")
-    check("vision routed to one stage only splits the request",
-          len(source_vision_requests) == 2,
+    check("per-stage vision needs only one generation, never a second one",
+          len(source_vision_requests) == 1,
           f"request count={len(source_vision_requests)}")
-    check("the stage the source's vision was not routed to never receives it",
+    check("the first stage does not receive vision routed only to the hires stage",
           "vlm_images" not in source_vision_requests[0],
           f"keys={sorted(source_vision_requests[0])}")
-    check("the stage the source's vision was routed to receives exactly that image",
-          len(source_vision_requests[1].get("vlm_images", [])) == 1,
-          f"vlm_images={len(source_vision_requests[1].get('vlm_images', []))}")
+    check("the hires stage receives its vision through the paused exchange",
+          any(len(supplied.get("vlm_images", [])) == 1 for supplied in stub_state["hires_inputs"]),
+          f"hires inputs={[len(s.get('vlm_images', [])) for s in stub_state['hires_inputs']]}")
 
     hires_reference_params = build_job_params("hires-lowres-reference")
     hires_reference_params["hires"] = True
@@ -505,22 +541,17 @@ def main() -> int:
                              and j["status"] == "completed"), None),
                30, "hires-lowres-reference job to complete")
     hires_reference_requests = find_all_generation_requests_for_prompt("hires-lowres-reference")
-    check("using the low-res pass as a reference forces the low-res generation to run",
-          len(hires_reference_requests) == 2,
+    check("reading the first stage's output needs no second generation",
+          len(hires_reference_requests) == 1,
           f"request count={len(hires_reference_requests)}")
-    lowres_native_args = json.loads(hires_reference_requests[0]["prompt"]
-                                    .split("<sd_cpp_extra_args>", 1)[1].split("</sd_cpp_extra_args>", 1)[0])
-    check("the low-res pass itself carries no attachment and no hires block",
-          "extra_images" not in hires_reference_requests[0]
-          and "vlm_images" not in hires_reference_requests[0]
-          and "hires" not in lowres_native_args,
-          f"keys={sorted(hires_reference_requests[0])} native={sorted(lowres_native_args)}")
-    check("the hires pass reads the low-res result for vision only, never as a DiT reference",
-          len(hires_reference_requests[1].get("vlm_images", [])) == 1
-          and "extra_images" not in hires_reference_requests[1],
-          f"vlm_images count={len(hires_reference_requests[1].get('vlm_images', []))}")
-    hires_reference_native = json.loads(hires_reference_requests[1]["prompt"]
-                                        .split("<sd_cpp_extra_args>", 1)[1].split("</sd_cpp_extra_args>", 1)[0])
+    hires_reference_native = hires_reference_requests[0]
+    check("the run asks the runtime to pause so the first stage can be read",
+          hires_reference_native["hires"].get("await_stage_input") is True,
+          f"hires={hires_reference_native.get('hires')}")
+    check("the first stage's output reaches the hires pass for vision only",
+          any(len(supplied.get("vlm_images", [])) == 1
+              for supplied in stub_state["hires_inputs"]),
+          "it is supplied through the pause, never as a starting latent")
     check("a vision attachment needs no pass_to_dit workaround to stay out of the transformer",
           "ref_image_args" not in hires_reference_native,
           "its own channel is never encoded, so the reference preset does not apply to it")
@@ -538,14 +569,14 @@ def main() -> int:
                              and j["status"] == "completed"), None),
                30, "hires-without-edit-input job to complete")
     no_edit_input_requests = find_all_generation_requests_for_prompt("hires-without-edit-input")
-    check("declining edit input on the hires stage runs it as its own request",
-          len(no_edit_input_requests) == 2,
+    check("declining edit input on the hires stage still needs only one generation",
+          len(no_edit_input_requests) == 1,
           f"request count={len(no_edit_input_requests)}")
     check("the first stage still carries the edit references",
-          len(no_edit_input_requests[0].get("extra_images", [])) == 1,
-          f"extra_images={len(no_edit_input_requests[0].get('extra_images', []))}")
-    check("the hires stage carries no edit references at all",
-          "extra_images" not in no_edit_input_requests[1],
+          len(no_edit_input_requests[0].get("ref_images", [])) == 1,
+          f"ref_images={len(no_edit_input_requests[0].get('ref_images', []))}")
+    check("the hires pass is told to sample without those reference latents",
+          no_edit_input_requests[0]["hires"].get("drop_reference_latents") is True,
           "this is what keeps their tokens out of the hires attention sequence")
 
     plain_hires_params = build_job_params("hires-without-reference")
@@ -572,28 +603,20 @@ def main() -> int:
                              and j["status"] == "completed"), None),
                30, "hires-varying-settings job to complete")
     varying_requests = find_all_generation_requests_for_prompt("hires-varying-settings")
-    check("a hires prompt override runs the stages as two requests",
-          len(varying_requests) == 2, f"request count={len(varying_requests)}")
-    first_stage_native = json.loads(varying_requests[0]["prompt"]
-                                    .split("<sd_cpp_extra_args>", 1)[1].split("</sd_cpp_extra_args>", 1)[0])
-    check("the first stage renders at base resolution with no hires block",
-          "hires" not in first_stage_native, f"native={sorted(first_stage_native)}")
-    second_stage_native = json.loads(varying_requests[1]["prompt"]
-                                     .split("<sd_cpp_extra_args>", 1)[1].split("</sd_cpp_extra_args>", 1)[0])
-    check("the second stage upscales from the first rather than running a native hires pass",
-          "hires" not in second_stage_native and "init_images" in varying_requests[1],
-          f"keys={sorted(varying_requests[1])}")
-    check("the second stage carries the hires prompt appended to the main prompt",
-          varying_requests[1]["prompt"].startswith("hires-varying-settings, sharp focus"),
-          f"prompt={varying_requests[1]['prompt'][:70]!r}")
-    check("the second stage leaves the upscaled latent unnoised by the img2img path",
-          "img2img_noise_multiplier=0"
-          in second_stage_native["sample_params"].get("extra_sample_args", ""),
-          f"extra_sample_args={second_stage_native['sample_params'].get('extra_sample_args')!r}")
-    check("the second stage renders at the hires resolution",
-          varying_requests[1]["width"] == varying_hires_params["hires_width"]
-          and varying_requests[1]["height"] == varying_hires_params["hires_height"],
-          f"{varying_requests[1]['width']}x{varying_requests[1]['height']}")
+    check("a hires prompt override still runs as one generation",
+          len(varying_requests) == 1, f"request count={len(varying_requests)}")
+    varying_native = varying_requests[0]
+    check("the run renders at base resolution and carries the hires block",
+          varying_native["width"] == varying_hires_params["width"]
+          and varying_native["hires"]["target_width"] == varying_hires_params["hires_width"],
+          f"{varying_native['width']}x{varying_native['height']} -> {varying_native['hires']}")
+    check("the run never carries a starting latent from a first stage output",
+          "init_image" not in varying_native,
+          f"keys={sorted(varying_native)}")
+    check("the hires prompt reaches the runtime through the paused exchange",
+          any(supplied.get("prompt", "").startswith("hires-varying-settings, sharp focus")
+              for supplied in stub_state["hires_inputs"]),
+          f"hires prompts={[s.get('prompt', '')[:50] for s in stub_state['hires_inputs']]}")
 
     matching_hires_params = build_job_params("hires-matching-settings")
     matching_hires_params["hires"] = True
@@ -604,8 +627,7 @@ def main() -> int:
                              and j["status"] == "completed"), None),
                30, "hires-matching-settings job to complete")
     matching_requests = find_all_generation_requests_for_prompt("hires-matching-settings")
-    matching_native = json.loads(matching_requests[0]["prompt"]
-                                 .split("<sd_cpp_extra_args>", 1)[1].split("</sd_cpp_extra_args>", 1)[0])
+    matching_native = matching_requests[0]
     check("unvarying hires settings keep the native single-request path",
           len(matching_requests) == 1 and matching_native.get("hires", {}).get("enabled") is True,
           f"requests={len(matching_requests)}")
@@ -625,8 +647,7 @@ def main() -> int:
     check("saving the low-res image does not render the base pass twice",
           len(save_lowres_requests) == 1,
           f"requests={len(save_lowres_requests)}; the runtime returns the pre-upscale image itself")
-    save_lowres_native = json.loads(save_lowres_requests[0]["prompt"]
-                                    .split("<sd_cpp_extra_args>", 1)[1].split("</sd_cpp_extra_args>", 1)[0])
+    save_lowres_native = save_lowres_requests[0]
     check("the request asks the runtime for the pre-upscale image",
           save_lowres_native["hires"].get("return_lowres_image") is True,
           f"hires={save_lowres_native.get('hires')}")
@@ -644,8 +665,7 @@ def main() -> int:
                              and j["status"] == "completed"), None),
                30, "hires-noise-multiplier job to complete")
     noisy_requests = find_all_generation_requests_for_prompt("hires-noise-multiplier")
-    noisy_native = json.loads(noisy_requests[0]["prompt"]
-                              .split("<sd_cpp_extra_args>", 1)[1].split("</sd_cpp_extra_args>", 1)[0])
+    noisy_native = noisy_requests[0]
     check("a noise multiplier above 1 reaches the runtime unclamped",
           noisy_native["hires"].get("noise_multiplier") == 1.6,
           f"noise_multiplier={noisy_native['hires'].get('noise_multiplier')}")
@@ -757,6 +777,14 @@ def main() -> int:
     check("unloading is refused while a job is running",
           busy_unload_status == 409,
           "pulling weights out from under a running generation would fail it")
+
+    first_stage_derived_requests = [
+        request_body for request_body in stub_state["generation_requests"]
+        if request_body.get("init_images")
+        and request_body["prompt"].startswith(("hires-", "source-vision-to-hires-only"))]
+    check("no request upscales from a saved first stage image",
+          first_stage_derived_requests == [],
+          f"{len(first_stage_derived_requests)} request(s) carry a decoded first stage as init_images")
 
     check("logout invalidates the token immediately",
           client.post("/api/logout", headers=session_headers).status_code == 200

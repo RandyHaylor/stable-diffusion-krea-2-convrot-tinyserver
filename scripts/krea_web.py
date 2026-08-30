@@ -488,65 +488,53 @@ class QueueManager:
             stage_one_tag_mode=stage_one_tag_mode,
             hires_reference_encode_size=hires_reference_encode_size(p))
 
-        # The first stage's result must exist as a file before the hires request can
-        # reference or tag it, and a varying hires stage renders from it directly.
-        wants_lowres_reference = bool(
+        wants_stage_one_vision = bool(
             hires_enabled and hires_vision_source_needs_the_first_stage_image(hires_vision_source(p)))
         wants_stage_one_tags = hires_enabled and stage_one_tags_need_the_first_stage_image(
             stage_one_tag_mode)
-        # Saving the low-res image does not need its own render: the runtime decodes
-        # the pre-upscale latent it already holds. Only a stage that has to read that
-        # image back as a file before the next request is built forces a split.
-        run_first_stage_separately = hires_enabled and (
-            wants_lowres_reference or wants_stage_one_tags or settings_vary)
-        returns_lowres_image = bool(
-            hires_enabled and p.get("save_lowres") and not run_first_stage_separately)
+        # The first stage is exported for saving, tagging and vision while its
+        # latent stays in the runtime, so the hires pass never restarts from a
+        # decoded image and one generation covers both stages.
+        pauses_between_stages = hires_enabled and (
+            wants_stage_one_vision or wants_stage_one_tags or settings_vary)
 
-        outputs: list[str] = []
-        lowres_reference_names: list[str] = []
-        stage_one_tag_groups: list[str] = []
-        first_stage_image_name = ""
-        if run_first_stage_separately:
-            lowres_outputs = self.run_single_backend_generation(
-                p, hires=False, prefix=f"krea-web-lowres-{job['id']}", tag_groups=main_tag_groups,
-                vlm_image_names=stage_one_vision_images)
-            outputs += lowres_outputs
-            first_stage_image_name = lowres_outputs[0] if lowres_outputs else ""
-            if wants_lowres_reference:
-                lowres_reference_names = lowres_outputs[:1]
-            if wants_stage_one_tags and first_stage_image_name:
-                stage_one_tag_groups = tag_groups_for_images([first_stage_image_name])
-            if job["cancel_requested"]:
-                return outputs
+        def supply_hires_input(first_stage_image_b64: str) -> dict:
+            stage_one_name = f"krea-web-lowres-{job['id']}-{datetime.now():%Y%m%d-%H%M%S}-0.png"
+            (OUTPUT_DIR / stage_one_name).write_bytes(base64.b64decode(first_stage_image_b64))
+            stage_one_tag_groups = (tag_groups_for_images([stage_one_name])
+                                    if wants_stage_one_tags else [])
+            hires_prompt = apply_stage_one_tags(
+                compose_hires_prompt(p["prompt"], str(p.get("hires_prompt", "")),
+                                     str(p.get("hires_prompt_mode", "append")),
+                                     hires_image_tag_groups),
+                stage_one_tag_groups, stage_one_tag_mode)
+            hires_negative_prompt = compose_hires_prompt(
+                str(p.get("negative_prompt", "")), str(p.get("hires_negative_prompt", "")),
+                str(p.get("hires_negative_prompt_mode", "append")), [])
+            hires_vision_names = ([stage_one_name] if wants_stage_one_vision
+                                  else list(hires_vision_images))
+            return {
+                "prompt": hires_prompt,
+                "negative_prompt": hires_negative_prompt,
+                "vlm_images": [load_output_image_as_base64(name) for name in hires_vision_names],
+            }
 
         stage = "krea-web-highres" if hires_enabled else "krea-web"
-        outputs += self.run_single_backend_generation(
+        return self.run_single_backend_generation(
             p,
-            hires=hires_enabled and not settings_vary,
-            sends_krea2_edit_references=(not settings_vary
-                                         or hires_stage_uses_krea2_edit_references(
-                                             hires_vision_source(p))),
+            hires=hires_enabled,
             prefix=f"{stage}-{job['id']}",
-            reference_image_names=lowres_reference_names,
-            tag_groups=hires_image_tag_groups if settings_vary else main_tag_groups,
-            vlm_image_names=hires_vision_images if settings_vary else stage_one_vision_images,
-            stage_one_output_tag_groups=stage_one_tag_groups,
-            stage_one_tag_mode=stage_one_tag_mode if settings_vary else DEFAULT_STAGE_ONE_TAG_MODE,
-            lora_stage="hires" if settings_vary else "main",
-            upscale_from_image=first_stage_image_name if settings_vary else "",
-            lowres_prefix=f"krea-web-lowres-{job['id']}" if returns_lowres_image else "")
-        return outputs
+            tag_groups=main_tag_groups,
+            vlm_image_names=stage_one_vision_images,
+            supply_hires_input=supply_hires_input if pauses_between_stages else None,
+            lowres_prefix=(f"krea-web-lowres-{job['id']}"
+                           if hires_enabled and p.get("save_lowres") else ""))
 
     def run_single_backend_generation(self, p: dict, hires: bool, prefix: str,
-                                      reference_image_names: list[str] | None = None,
                                       tag_groups: list[str] | None = None,
-                                      lora_stage: str = "main",
-                                      upscale_from_image: str = "",
                                       lowres_prefix: str = "",
                                       vlm_image_names: list[str] | None = None,
-                                      sends_krea2_edit_references: bool = True,
-                                      stage_one_output_tag_groups: list[str] | None = None,
-                                      stage_one_tag_mode: str = DEFAULT_STAGE_ONE_TAG_MODE) -> list[str]:
+                                      supply_hires_input=None) -> list[str]:
         # The job params are what both the output panel and the saved PNG report, so
         # the tags this request actually used are recorded there before it is sent.
         p["wd14_tags"] = list(tag_groups or [])
@@ -562,15 +550,10 @@ class QueueManager:
         pag_end = float(p.get("pag_end", 1.0))
         if not 0.0 <= pag_start <= pag_end <= 1.0:
             raise RuntimeError("PAG start/end must satisfy 0 <= start <= end <= 1")
-        # A hires stage running as its own request renders the upscale itself, so it
-        # takes the hires resolution and the hires prompt rather than the main ones.
-        renders_hires_upscale = bool(upscale_from_image)
-        krea2_edit_fields = (krea2_edit_payload_fields(p, load_output_image_as_base64)
-                             if sends_krea2_edit_references else {})
+        krea2_edit_fields = krea2_edit_payload_fields(p, load_output_image_as_base64)
         # The source image feeds three independent things; only its use as the
-        # starting latent conflicts with edit mode, whose target starts as pure
-        # noise, or with a hires pass that is upscaling the first stage instead.
-        source_name = ("" if (krea2_edit_fields or renders_hires_upscale
+        # starting latent conflicts with edit mode, whose target starts as pure noise.
+        source_name = ("" if (krea2_edit_fields
                               or not p.get("img2img_source_as_starting_latent"))
                        else str(p.get("source_image", "")))
         sample = {
@@ -578,7 +561,7 @@ class QueueManager:
             "sample_steps": int(p["steps"]), "flow_shift": float(p["flow_shift"]),
             "extra_sample_args": join_sample_args(
                 extra_sample_args_including_scheduler_settings(p),
-                img2img_noise_multiplier_sample_arg(p, renders_hires_upscale, bool(source_name))),
+                img2img_noise_multiplier_sample_arg(p, False, bool(source_name))),
             "guidance": {"txt_cfg": float(p["cfg"])},
             "pag": {
                 "enabled": bool(p.get("pag_enabled", False)),
@@ -593,7 +576,7 @@ class QueueManager:
             "vae_tiling_params": {"enabled": True, "tile_size_x": int(p["vae_tile_size"]),
                                   "tile_size_y": int(p["vae_tile_size"]), "target_overlap": 0.5},
             **krea2_edit_native_args_fields(
-                p, hires_reference_encode_size(p) if renders_hires_upscale else 0),
+                p, hires_reference_encode_size(p) if hires else 0),
         }
         if hires:
             native["hires"] = {
@@ -602,33 +585,24 @@ class QueueManager:
                 "steps": int(p["hires_steps"]), "denoising_strength": float(p["hires_denoise"]),
                 "noise_multiplier": float(p.get("hires_noise_multiplier", 1.0)),
                 "return_lowres_image": bool(lowres_prefix),
+                "await_stage_input": supply_hires_input is not None,
+                "drop_reference_latents": not hires_stage_uses_krea2_edit_references(
+                    hires_vision_source(p)),
             }
-        if renders_hires_upscale:
-            prompt_text = apply_stage_one_tags(
-                compose_hires_prompt(p["prompt"], str(p.get("hires_prompt", "")),
-                                     str(p.get("hires_prompt_mode", "append")),
-                                     tag_groups or []),
-                stage_one_output_tag_groups or [], stage_one_tag_mode)
-            negative_prompt_text = compose_hires_prompt(
-                str(p.get("negative_prompt", "")), str(p.get("hires_negative_prompt", "")),
-                str(p.get("hires_negative_prompt_mode", "append")), [])
-            width, height = int(p["hires_width"]), int(p["hires_height"])
-            steps = int(p["hires_steps"])
-        else:
-            prompt_text = compose_prompt_with_tag_groups(p["prompt"], tag_groups or [])
-            negative_prompt_text = str(p.get("negative_prompt", ""))
-            width, height = int(p["width"]), int(p["height"])
-            steps = int(p["steps"])
+        prompt_text = compose_prompt_with_tag_groups(p["prompt"], tag_groups or [])
+        negative_prompt_text = str(p.get("negative_prompt", ""))
+        width, height = int(p["width"]), int(p["height"])
+        steps = int(p["steps"])
 
-        prompt = prompt_text + " <sd_cpp_extra_args>" + json.dumps(native, separators=(",", ":")) + "</sd_cpp_extra_args>"
         payload = {
-            "prompt": prompt, "negative_prompt": negative_prompt_text,
-            "width": width, "height": height, "steps": steps,
-            "cfg_scale": float(p["cfg"]), "seed": int(p["seed"]), "batch_size": 1,
-            "sampler_name": p["sampler"], "scheduler": p["scheduler"],
+            **native,
+            "prompt": prompt_text, "negative_prompt": negative_prompt_text,
+            "width": width, "height": height,
+            "seed": int(p["seed"]), "batch_count": 1,
         }
+        payload["sample_params"]["sample_steps"] = steps
         requested_loras = []
-        for extra_lora in select_loras_for_stage(p.get("extra_loras", []), lora_stage):
+        for extra_lora in select_loras_for_stage(p.get("extra_loras", []), "main"):
             lora_path = (LORA_DIR / Path(extra_lora["path"]).name).resolve()
             if lora_path.parent != LORA_DIR.resolve() or not lora_path.is_file():
                 raise RuntimeError(f"selected LoRA is not available in models/loras: {extra_lora['path']}")
@@ -650,24 +624,17 @@ class QueueManager:
             for item in requested_loras
             if (ROOT / "models" / "loras" / item["path"]).is_file()
         ]
-        endpoint = "/sdapi/v1/txt2img"
-        payload.update(krea2_edit_fields)
-        if renders_hires_upscale:
-            # The first stage's result is the thing being upscaled, so it replaces
-            # whatever source the main stage used.
-            payload["init_images"] = [load_output_image_as_base64(upscale_from_image)]
-            payload["denoising_strength"] = float(p["hires_denoise"])
-            endpoint = "/sdapi/v1/img2img"
+        if krea2_edit_fields.get("extra_images"):
+            payload["ref_images"] = krea2_edit_fields["extra_images"]
         if source_name:
-            payload["init_images"] = [load_output_image_as_base64(source_name)]
-            payload["denoising_strength"] = float(p.get("img2img_denoise", 0.0))
-            endpoint = "/sdapi/v1/img2img"
+            payload["init_image"] = load_output_image_as_base64(source_name)
+            payload["strength"] = float(p.get("img2img_denoise", 0.0))
         # vlm_images reach the vision tower and are never encoded into reference
         # latents, so these cost nothing in the diffusion model's attention sequence.
-        for vision_image_name in (vlm_image_names or []) + (reference_image_names or []):
+        for vision_image_name in (vlm_image_names or []):
             payload.setdefault("vlm_images", []).append(
                 load_output_image_as_base64(vision_image_name))
-        result = self.post_json_to_backend(endpoint, payload, timeout=7200)
+        result = self.run_generation_job(payload, supply_hires_input)
         images = result.get("images", [])
         if not images:
             raise RuntimeError(f"backend returned no images: {result}")
@@ -756,6 +723,35 @@ class QueueManager:
                     ) from exc
                 time.sleep(1)
         raise RuntimeError(f"checkpoint backend did not become ready: {checkpoint_name}")
+
+    def run_generation_job(self, payload: dict, supply_hires_input=None) -> dict:
+        """Run one generation, pausing between passes when the caller asks to.
+
+        The runtime holds the first stage's latent while it is parked, so the
+        hires pass continues from that latent no matter what happens here. The
+        callback receives the decoded first stage and returns what the hires pass
+        should be conditioned on.
+        """
+        submitted = self.post_json_to_backend("/sdcpp/v1/img_gen", payload, timeout=120)
+        job_id = submitted["id"]
+        while True:
+            job = self.get_json_from_backend(f"/sdcpp/v1/jobs/{job_id}", timeout=120)
+            status = job.get("status")
+            if status == "awaiting_hires_input":
+                hires_input = ({} if supply_hires_input is None
+                               else supply_hires_input(job["first_stage"]["b64_json"]))
+                self.post_json_to_backend(f"/sdcpp/v1/jobs/{job_id}/hires-input",
+                                          hires_input, timeout=120)
+                continue
+            if status == "completed":
+                return {"images": [entry["b64_json"] for entry in job["result"]["images"]]}
+            if status in ("failed", "cancelled"):
+                raise RuntimeError((job.get("error") or {}).get("message", status))
+            time.sleep(0.25)
+
+    def get_json_from_backend(self, path: str, timeout: int) -> dict:
+        with urllib.request.urlopen(self.backend + path, timeout=timeout) as response:
+            return json.load(response)
 
     def post_json_to_backend(self, path: str, payload: dict, timeout: int) -> dict:
         req = urllib.request.Request(self.backend + path, data=json.dumps(payload).encode(),

@@ -83,7 +83,7 @@ def main() -> int:
         krea_web.OUTPUT_DIR = Path(temporary)
         try:
             metadata_manager = object.__new__(krea_web.QueueManager)
-            metadata_manager.post_json_to_backend = lambda *_args, **_kwargs: {
+            metadata_manager.run_generation_job = lambda *_args, **_kwargs: {
                 "images": [base64.b64encode(png_bytes()).decode()],
                 "info": '{"all_seeds":[-1]}',
             }
