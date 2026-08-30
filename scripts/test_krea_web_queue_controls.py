@@ -458,7 +458,7 @@ def main() -> int:
     referenced_source_params["source_image"] = uploaded_source["name"]
     referenced_source_params["img2img_denoise"] = 0.75
     referenced_source_params["img2img_source_as_starting_latent"] = True
-    referenced_source_params["img2img_use_vision_on_source"] = True
+    referenced_source_params["img2img_source_vision_to_stage_one"] = True
     client.post("/api/jobs", json={"params": referenced_source_params}, headers=session_headers)
     wait_until(lambda: next((j for j in client.get("/api/state", headers=session_headers).json()["history"]
                              if (j["params"] or {}).get("prompt") == "img2img-source-as-reference"
@@ -473,6 +473,27 @@ def main() -> int:
           "denoising_strength" in referenced_source_request
           and stub_state["generation_paths"][-1] == "/sdapi/v1/img2img",
           f"path={stub_state['generation_paths'][-1]}")
+
+    source_vision_to_hires_params = build_job_params("source-vision-to-hires-only")
+    source_vision_to_hires_params["source_image"] = uploaded_source["name"]
+    source_vision_to_hires_params["hires"] = True
+    source_vision_to_hires_params["save_lowres"] = False
+    source_vision_to_hires_params["img2img_source_vision_to_hires"] = True
+    client.post("/api/jobs", json={"params": source_vision_to_hires_params}, headers=session_headers)
+    wait_until(lambda: next((j for j in client.get("/api/state", headers=session_headers).json()["history"]
+                             if (j["params"] or {}).get("prompt") == "source-vision-to-hires-only"
+                             and j["status"] == "completed"), None),
+               30, "source-vision-to-hires-only job to complete")
+    source_vision_requests = find_all_generation_requests_for_prompt("source-vision-to-hires-only")
+    check("vision routed to one stage only splits the request",
+          len(source_vision_requests) == 2,
+          f"request count={len(source_vision_requests)}")
+    check("the stage the source's vision was not routed to never receives it",
+          "vlm_images" not in source_vision_requests[0],
+          f"keys={sorted(source_vision_requests[0])}")
+    check("the stage the source's vision was routed to receives exactly that image",
+          len(source_vision_requests[1].get("vlm_images", [])) == 1,
+          f"vlm_images={len(source_vision_requests[1].get('vlm_images', []))}")
 
     hires_reference_params = build_job_params("hires-lowres-reference")
     hires_reference_params["hires"] = True

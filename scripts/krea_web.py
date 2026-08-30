@@ -151,6 +151,18 @@ def images_tagged_for_stage(p: dict, stage: str) -> list[str]:
     return image_names
 
 
+def images_giving_vision_to_stage(p: dict, stage: str) -> list[str]:
+    """Output filenames whose vision tokens one stage should receive.
+
+    Krea2 Edit references reach the vision tower through the reference preset
+    instead, so they are not listed here.
+    """
+    source_image = str(p.get("source_image", "")).strip()
+    if source_image and p.get(f"img2img_source_vision_to_{stage}"):
+        return [source_image]
+    return []
+
+
 def tag_groups_for_images(image_names: list[str],
                           tag_group_cache: dict[str, str] | None = None) -> list[str]:
     """One comma-separated tag string per image, skipping any that yield nothing.
@@ -451,12 +463,17 @@ class QueueManager:
         hires_image_tag_groups = (tag_groups_for_images(images_tagged_for_stage(p, "hires"),
                                                         tag_group_cache)
                                   if hires_enabled else [])
+        stage_one_vision_images = images_giving_vision_to_stage(p, "stage_one")
+        hires_vision_images = (images_giving_vision_to_stage(p, "hires")
+                               if hires_enabled else [])
 
         settings_vary = hires_settings_vary_from_main(
             hires_enabled, p.get("extra_loras", []),
             str(p.get("hires_prompt", "")), str(p.get("hires_negative_prompt", "")),
             main_tag_groups=main_tag_groups,
             hires_tag_groups=hires_image_tag_groups,
+            main_vision_images=stage_one_vision_images,
+            hires_vision_images=hires_vision_images,
             stage_one_tag_mode=stage_one_tag_mode,
             hires_reference_encode_size=hires_reference_encode_size(p))
 
@@ -479,7 +496,8 @@ class QueueManager:
         first_stage_image_name = ""
         if run_first_stage_separately:
             lowres_outputs = self.run_single_backend_generation(
-                p, hires=False, prefix=f"krea-web-lowres-{job['id']}", tag_groups=main_tag_groups)
+                p, hires=False, prefix=f"krea-web-lowres-{job['id']}", tag_groups=main_tag_groups,
+                vlm_image_names=stage_one_vision_images)
             outputs += lowres_outputs
             first_stage_image_name = lowres_outputs[0] if lowres_outputs else ""
             if wants_lowres_reference:
@@ -496,6 +514,7 @@ class QueueManager:
             prefix=f"{stage}-{job['id']}",
             reference_image_names=lowres_reference_names,
             tag_groups=hires_image_tag_groups if settings_vary else main_tag_groups,
+            vlm_image_names=hires_vision_images if settings_vary else stage_one_vision_images,
             stage_one_output_tag_groups=stage_one_tag_groups,
             stage_one_tag_mode=stage_one_tag_mode if settings_vary else DEFAULT_STAGE_ONE_TAG_MODE,
             lora_stage="hires" if settings_vary else "main",
@@ -509,6 +528,7 @@ class QueueManager:
                                       lora_stage: str = "main",
                                       upscale_from_image: str = "",
                                       lowres_prefix: str = "",
+                                      vlm_image_names: list[str] | None = None,
                                       stage_one_output_tag_groups: list[str] | None = None,
                                       stage_one_tag_mode: str = DEFAULT_STAGE_ONE_TAG_MODE) -> list[str]:
         # The job params are what both the output panel and the saved PNG report, so
@@ -626,14 +646,10 @@ class QueueManager:
             payload["denoising_strength"] = float(p.get("img2img_denoise", 0.0))
             endpoint = "/sdapi/v1/img2img"
         # vlm_images reach the vision tower and are never encoded into reference
-        # latents, so the source image and the first stage's output can be read
-        # without adding their tokens to the diffusion model's attention sequence.
-        source_image_name = str(p.get("source_image", "")).strip()
-        if source_image_name and p.get("img2img_use_vision_on_source"):
+        # latents, so these cost nothing in the diffusion model's attention sequence.
+        for vision_image_name in (vlm_image_names or []) + (reference_image_names or []):
             payload.setdefault("vlm_images", []).append(
-                load_output_image_as_base64(source_image_name))
-        for reference_name in (reference_image_names or []):
-            payload.setdefault("vlm_images", []).append(load_output_image_as_base64(reference_name))
+                load_output_image_as_base64(vision_image_name))
         result = self.post_json_to_backend(endpoint, payload, timeout=7200)
         images = result.get("images", [])
         if not images:

@@ -44,6 +44,8 @@ def hires_settings_vary_from_main(hires_enabled: bool,
                                   hires_negative_prompt: str = "",
                                   main_tag_groups: list[str] | None = None,
                                   hires_tag_groups: list[str] | None = None,
+                                  main_vision_images: list[str] | None = None,
+                                  hires_vision_images: list[str] | None = None,
                                   stage_one_tag_mode: str = "not_used",
                                   hires_reference_encode_size: int = 0) -> bool:
     """Whether the hires stage's settings differ from the main stage's.
@@ -61,6 +63,8 @@ def hires_settings_vary_from_main(hires_enabled: bool,
     if stage_one_tag_mode != "not_used":
         return True
     if list(main_tag_groups or []) != list(hires_tag_groups or []):
+        return True
+    if list(main_vision_images or []) != list(hires_vision_images or []):
         return True
     if lora_selections_differ(select_loras_for_stage(extra_loras, "main"),
                               select_loras_for_stage(extra_loras, "hires")):
