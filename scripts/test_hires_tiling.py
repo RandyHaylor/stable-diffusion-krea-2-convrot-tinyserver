@@ -20,6 +20,8 @@ from hires_tiling import (  # noqa: E402
     hires_tile_boxes_for_params,
     hires_tile_overlap_pixels,
     hires_tile_size,
+    hires_upscale_factor,
+    recommended_maximum_hires_denoise_for_tiling,
     renders_hires_by_tiling,
 )
 
@@ -131,6 +133,27 @@ def main() -> int:
           describe_hires_tiling_plan(params())["anchored"] is True
           and describe_hires_tiling_plan(
               params(hires_tile_source="independent"))["anchored"] is False)
+
+    check("the upscale factor is the larger of the two axes' growth",
+          hires_upscale_factor(params()) == 2.0,
+          f"got {hires_upscale_factor(params())}")
+    check("a target no larger than the tile is not an upscale",
+          hires_upscale_factor(params(hires_width=832, hires_height=1216)) == 1.0)
+    check("the recommended denoise matches what a doubling measured clean at",
+          abs(recommended_maximum_hires_denoise_for_tiling(params()) - 0.6) < 0.01,
+          f"got {recommended_maximum_hires_denoise_for_tiling(params())}")
+    check("a tripling recommends less denoise than a doubling",
+          recommended_maximum_hires_denoise_for_tiling(
+              params(hires_width=2496, hires_height=3648))
+          < recommended_maximum_hires_denoise_for_tiling(params()),
+          "a blurrier source gives tiles more room to disagree")
+    check("the recommendation never drops to nothing or exceeds a full repaint",
+          all(0.2 <= recommended_maximum_hires_denoise_for_tiling(
+                  params(hires_width=width, hires_height=int(width * 1216 / 832))) <= 0.75
+              for width in (900, 1200, 1664, 2496, 3328, 6000)))
+    check("the plan carries the factor and the recommendation",
+          describe_hires_tiling_plan(params())["upscale_factor"] == 2.0
+          and describe_hires_tiling_plan(params())["recommended_maximum_denoise"] > 0)
 
     print()
     if failures:

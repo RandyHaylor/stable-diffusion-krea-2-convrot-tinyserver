@@ -59,6 +59,8 @@ Tests first, then the code they cover
     - `scripts/test_source_upload_and_seed.py`
     - `scripts/test_krea_web_queue_controls.py`
     - `scripts/test_wd14_tagging.py`
+    - `scripts/test_tiled_refine.py`
+    - `scripts/test_hires_tiling.py`
     - Plain `python3 <file>`, no pytest
     - Point `krea_web.OUTPUT_DIR` at a temp dir in any suite that saves images
 
@@ -84,6 +86,37 @@ Reference tokens share the target's attention sequence
 Vision tower is indexed at startup, NOT resident
     - `loading llm vision` is `model_loader` reading the file, not a VRAM upload
     - `total params memory size` is a registry total, NOT residency
+
+Tiled hires is a separate path, not a setting on the normal one
+    - `hires_tiling = on` -> `renders_hires_by_tiling()` routes around the
+      in-request hires entirely
+    - First stage runs alone, is decoded and resampled to the full target, then
+      repainted as overlapping tiles, one request each
+    - Tile size IS the main pass resolution, the one size the job proved fits
+    - Trades the in-request latent continuity for reach; declines to engage when
+      the target needs a single tile
+    - `scripts/tiled_refine.py` holds the geometry and blending, pure and tested
+
+Tiles must overlap, and an exact doubling does not overlap on its own
+    - Two 832px tiles reach 1664px only by abutting, leaving nothing to blend
+    - `tile_start_positions_covering_length()` spreads a computed count evenly
+      instead of marching at the stride, so overlap is uniform and never under
+      the minimum
+    - An exact 2x therefore needs THREE tiles per axis, not two
+
+Blending removes a seam step but cannot reconcile content
+    - Independently refined neighbours disagree; cross-fading a disagreement
+      makes a translucent ghost, not a clean join
+    - `hires_tile_source = anchored` (the default) writes each finished tile back
+      before the next is cut, so a tile starts from its neighbour's own pixels
+    - Seam-steepness metrics RATE A GHOST WELL: blur reads as a shallow
+      gradient. Judge tiling by the seam crops, not by the numbers.
+
+Usable hires denoise falls as the tiling upscale factor rises
+    - A blurrier resample gives each tile more freedom to invent differently
+    - Measured: 2x held together at 0.6; 3x ghosted at 0.6, clean at 0.35
+    - `recommended_maximum_hires_denoise_for_tiling()` is guidance from those
+      three points, surfaced in the UI notice, enforced nowhere
 
 === Response summary ===
 

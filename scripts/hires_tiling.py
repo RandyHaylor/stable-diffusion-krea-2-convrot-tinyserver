@@ -92,6 +92,33 @@ def renders_hires_by_tiling(params: dict) -> bool:
     return len(hires_tile_boxes_for_params(params)) > 1
 
 
+def hires_upscale_factor(params: dict) -> float:
+    """How far the target stretches the first stage, by its longer growth."""
+    tile_width, tile_height = hires_tile_size(params)
+    if tile_width <= 0 or tile_height <= 0:
+        return 1.0
+    return max(int(params.get("hires_width", 0) or 0) / tile_width,
+               int(params.get("hires_height", 0) or 0) / tile_height)
+
+
+def recommended_maximum_hires_denoise_for_tiling(params: dict) -> float:
+    """The most denoise a tiled pass takes at this factor before tiles disagree.
+
+    Resampling further leaves a blurrier source, which gives each tile more
+    freedom to invent its own version of whatever crosses a shared band. Past
+    some point the neighbours disagree and the cross-fade averages both into a
+    ghost, so the usable denoise falls as the factor rises.
+
+    This is a guide from three measured points, not a law: a doubling held
+    together at 0.6, a tripling ghosted at 0.6 and was clean at 0.35. Treat it as
+    the value to start below rather than a boundary anything is enforced at.
+    """
+    factor = hires_upscale_factor(params)
+    if factor <= 1.0:
+        return 0.75
+    return max(0.2, min(0.75, 0.6 / (factor - 1.0)))
+
+
 def anchors_each_hires_tile_to_its_neighbours(params: dict) -> bool:
     """Whether a finished tile is written back before the next one is cut."""
     requested = str(params.get("hires_tile_source", DEFAULT_HIRES_TILE_SOURCE_MODE))
@@ -117,4 +144,7 @@ def describe_hires_tiling_plan(params: dict) -> dict:
         "tile_height": tile_height,
         "overlap_pixels": overlap,
         "anchored": anchors_each_hires_tile_to_its_neighbours(params),
+        "upscale_factor": hires_upscale_factor(params),
+        "recommended_maximum_denoise":
+            recommended_maximum_hires_denoise_for_tiling(params),
     }

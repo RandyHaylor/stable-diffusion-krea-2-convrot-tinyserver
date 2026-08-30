@@ -848,9 +848,21 @@ function refreshHiresTilingNotice(){
   const tileCount = columns * rows;
   const tilingRequested = $('hires').checked && $('hires_tiling').value === 'on';
   notice.hidden = !(tilingRequested && tileCount > 1);
-  notice.textContent =
+
+  const upscaleFactor = Math.max(hiresWidth / tileWidth, hiresHeight / tileHeight);
+  const recommendedDenoise = upscaleFactor <= 1
+    ? 0.75 : Math.max(0.2, Math.min(0.75, 0.6 / (upscaleFactor - 1)));
+  const denoise = Number($('hires_denoise').value);
+  let text =
     `Hires tiling: ${columns}x${rows} = ${tileCount} passes of ${tileWidth}x${tileHeight}, ` +
-    `overlapping ${overlap}px. One request per tile, and no latent continuity.`;
+    `overlapping ${overlap}px, ${upscaleFactor.toFixed(2)}x upscale. ` +
+    `One request per tile, and no latent continuity.`;
+  if (denoise > recommendedDenoise + 0.01) {
+    text += ` Denoise ${denoise} is high for this factor; measurements start ghosting ` +
+      `above about ${recommendedDenoise.toFixed(2)}, where neighbouring tiles invent ` +
+      `different content and the blend averages both.`;
+  }
+  notice.textContent = text;
 }
 
 function refreshNoticesThatDependOnStageSettings(){
