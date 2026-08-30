@@ -1,5 +1,5 @@
 diff --git a/examples/common/common.cpp b/examples/common/common.cpp
-index 3581215..d2706cb 100644
+index 3581215..4cfb61b 100644
 --- a/examples/common/common.cpp
 +++ b/examples/common/common.cpp
 @@ -1954,6 +1954,7 @@ bool SDGenerationParams::from_json_str(
@@ -72,7 +72,19 @@ index 3581215..d2706cb 100644
                                   nullptr);
      }
  
-@@ -2521,6 +2548,10 @@ sd_img_gen_params_t SDGenerationParams::to_sd_img_gen_params_t() {
+@@ -2507,6 +2534,11 @@ sd_img_gen_params_t SDGenerationParams::to_sd_img_gen_params_t() {
+ 
+     ref_image_views.clear();
+     ref_image_views.reserve(ref_images.size());
++    vlm_image_views.clear();
++    vlm_image_views.reserve(vlm_images.size());
++    for (auto& vlm_image : vlm_images) {
++        vlm_image_views.push_back(vlm_image.get());
++    }
+     for (auto& ref_image : ref_images) {
+         ref_image_views.push_back(ref_image.get());
+     }
+@@ -2521,6 +2553,10 @@ sd_img_gen_params_t SDGenerationParams::to_sd_img_gen_params_t() {
      sample_params.guidance.slg.layer_count            = skip_layers.size();
      high_noise_sample_params.guidance.slg.layers      = high_noise_skip_layers.empty() ? nullptr : high_noise_skip_layers.data();
      high_noise_sample_params.guidance.slg.layer_count = high_noise_skip_layers.size();
@@ -83,7 +95,16 @@ index 3581215..d2706cb 100644
      sample_params.custom_sigmas                       = custom_sigmas.empty() ? nullptr : custom_sigmas.data();
      sample_params.custom_sigmas_count                 = static_cast<int>(custom_sigmas.size());
      sample_params.extra_sample_args                   = extra_sample_args.empty() ? nullptr : extra_sample_args.c_str();
-@@ -2590,6 +2621,8 @@ sd_img_gen_params_t SDGenerationParams::to_sd_img_gen_params_t() {
+@@ -2564,6 +2600,8 @@ sd_img_gen_params_t SDGenerationParams::to_sd_img_gen_params_t() {
+     params.init_image          = init_image.get();
+     params.ref_images          = ref_image_views.empty() ? nullptr : ref_image_views.data();
+     params.ref_images_count    = static_cast<int>(ref_image_views.size());
++    params.vlm_images          = vlm_image_views.empty() ? nullptr : vlm_image_views.data();
++    params.vlm_images_count    = static_cast<int>(vlm_image_views.size());
+     params.ref_image_args      = ref_image_args.c_str();
+     params.mask_image          = mask_image.get();
+     params.width               = get_resolved_width();
+@@ -2590,6 +2628,8 @@ sd_img_gen_params_t SDGenerationParams::to_sd_img_gen_params_t() {
      params.hires.target_height       = hires_height;
      params.hires.steps               = hires_steps;
      params.hires.denoising_strength  = hires_denoising_strength;
@@ -92,7 +113,19 @@ index 3581215..d2706cb 100644
      params.hires.upscale_tile_size   = hires_upscale_tile_size;
      params.hires.custom_sigmas       = hires_custom_sigmas.empty() ? nullptr : hires_custom_sigmas.data();
      params.hires.custom_sigmas_count = static_cast<int>(hires_custom_sigmas.size());
-@@ -2650,6 +2683,10 @@ sd_vid_gen_params_t SDGenerationParams::to_sd_vid_gen_params_t() {
+@@ -2619,6 +2659,11 @@ sd_vid_gen_params_t SDGenerationParams::to_sd_vid_gen_params_t() {
+ 
+     ref_image_views.clear();
+     ref_image_views.reserve(ref_images.size());
++    vlm_image_views.clear();
++    vlm_image_views.reserve(vlm_images.size());
++    for (auto& vlm_image : vlm_images) {
++        vlm_image_views.push_back(vlm_image.get());
++    }
+     for (auto& image : ref_images) {
+         ref_image_views.push_back(image.get());
+     }
+@@ -2650,6 +2695,10 @@ sd_vid_gen_params_t SDGenerationParams::to_sd_vid_gen_params_t() {
      sample_params.guidance.slg.layer_count            = skip_layers.size();
      high_noise_sample_params.guidance.slg.layers      = high_noise_skip_layers.empty() ? nullptr : high_noise_skip_layers.data();
      high_noise_sample_params.guidance.slg.layer_count = high_noise_skip_layers.size();
@@ -103,7 +136,7 @@ index 3581215..d2706cb 100644
      sample_params.custom_sigmas                       = custom_sigmas.empty() ? nullptr : custom_sigmas.data();
      sample_params.custom_sigmas_count                 = static_cast<int>(custom_sigmas.size());
      sample_params.extra_sample_args                   = extra_sample_args.empty() ? nullptr : extra_sample_args.c_str();
-@@ -2692,6 +2729,8 @@ sd_vid_gen_params_t SDGenerationParams::to_sd_vid_gen_params_t() {
+@@ -2692,6 +2741,8 @@ sd_vid_gen_params_t SDGenerationParams::to_sd_vid_gen_params_t() {
      params.hires.target_height       = hires_height;
      params.hires.steps               = hires_steps;
      params.hires.denoising_strength  = hires_denoising_strength;
@@ -113,7 +146,7 @@ index 3581215..d2706cb 100644
      params.hires.custom_sigmas       = hires_custom_sigmas.empty() ? nullptr : hires_custom_sigmas.data();
      params.hires.custom_sigmas_count = static_cast<int>(hires_custom_sigmas.size());
 diff --git a/examples/common/common.h b/examples/common/common.h
-index 34b4a01..5210cc6 100644
+index 34b4a01..c21de30 100644
 --- a/examples/common/common.h
 +++ b/examples/common/common.h
 @@ -223,6 +223,8 @@ struct SDGenerationParams {
@@ -134,6 +167,47 @@ index 34b4a01..5210cc6 100644
      int hires_upscale_tile_size    = 128;
      std::vector<float> hires_custom_sigmas;
  
+@@ -278,6 +282,7 @@ struct SDGenerationParams {
+     SDImageOwner init_image;
+     SDImageOwner end_image;
+     std::vector<SDImageOwner> ref_images;
++    std::vector<SDImageOwner> vlm_images;
+     std::vector<std::vector<SDImageOwner>> ref_videos;
+     std::vector<SDAudioOwner> ref_video_audios;
+     std::vector<SDAudioOwner> ref_audios;
+@@ -289,6 +294,7 @@ struct SDGenerationParams {
+ 
+     // Backing storage for sd_img_gen_params_t view fields.
+     std::vector<sd_image_t> ref_image_views;
++    std::vector<sd_image_t> vlm_image_views;
+     std::vector<std::vector<sd_image_t>> ref_video_frame_views;
+     std::vector<sd_ref_video_t> ref_video_views;
+     std::vector<sd_audio_t> ref_audio_views;
+diff --git a/examples/server/routes_sdapi.cpp b/examples/server/routes_sdapi.cpp
+index 53ab20d..e3d4bb9 100644
+--- a/examples/server/routes_sdapi.cpp
++++ b/examples/server/routes_sdapi.cpp
+@@ -254,6 +254,20 @@ static bool build_sdapi_img_gen_request(const json& j,
+         }
+     }
+ 
++    // Vision-only attachments. These never become reference latents, so they do
++    // not set the target size the way an extra_image does.
++    if (j.contains("vlm_images") && j["vlm_images"].is_array()) {
++        for (const auto& vlm_image : j["vlm_images"]) {
++            if (!vlm_image.is_string()) {
++                continue;
++            }
++            SDImageOwner image_owner;
++            if (decode_base64_image(vlm_image.get<std::string>(), 3, 0, 0, image_owner)) {
++                request.gen_params.vlm_images.push_back(std::move(image_owner));
++            }
++        }
++    }
++
+     // Intentionally disable prompt-embedded LoRA tag parsing for server APIs.
+     if (!request.gen_params.resolve_and_validate(IMG_GEN, "", runtime.ctx_params->hires_upscalers_dir, true)) {
+         error_message = "invalid params";
 diff --git a/examples/server/routes_sdcpp.cpp b/examples/server/routes_sdcpp.cpp
 index 7253dbf..e7bb6e8 100644
 --- a/examples/server/routes_sdcpp.cpp
@@ -227,7 +301,7 @@ index 7253dbf..e7bb6e8 100644
          try {
              if (req.body.empty()) {
 diff --git a/include/stable-diffusion.h b/include/stable-diffusion.h
-index bab62ba..73c2564 100644
+index bab62ba..c57b765 100644
 --- a/include/stable-diffusion.h
 +++ b/include/stable-diffusion.h
 @@ -266,6 +266,15 @@ typedef struct {
@@ -269,6 +343,75 @@ index bab62ba..73c2564 100644
      float* custom_sigmas;
      int custom_sigmas_count;
  } sd_hires_params_t;
+@@ -378,6 +395,10 @@ typedef struct {
+     sd_image_t init_image;
+     sd_image_t* ref_images;
+     int ref_images_count;
++    // Images the vision tower reads that are never VAE-encoded into reference
++    // latents, so they cost nothing in the diffusion model's attention sequence.
++    sd_image_t* vlm_images;
++    int vlm_images_count;
+     const char* ref_image_args;
+     sd_image_t mask_image;
+     int width;
+diff --git a/src/conditioning/conditioner.hpp b/src/conditioning/conditioner.hpp
+index 3d7ff03..9905693 100644
+--- a/src/conditioning/conditioner.hpp
++++ b/src/conditioning/conditioner.hpp
+@@ -129,6 +129,10 @@ struct ConditionerParams {
+     int height                                                          = -1;
+     bool zero_out_masked                                                = false;
+     const std::vector<sd::Tensor<float>>* ref_images                    = nullptr;  // for qwen image edit
++    // Images the vision tower reads that are never encoded into reference latents,
++    // so a caller can condition on what an image looks like without paying for its
++    // tokens in the diffusion model's attention sequence.
++    const std::vector<sd::Tensor<float>>* vlm_images                    = nullptr;
+     const std::vector<MiniMaxH3PresentationItem>* minimax_h3_references = nullptr;
+     RefImageParams ref_image_params;
+ };
+@@ -2528,7 +2532,21 @@ struct LLMEmbedder : public Conditioner {
+             out_layers                       = {2, 5, 8, 11, 14, 17, 20, 23, 26, 29, 32, 35};
+ 
+             prompt = "<|im_start|>system\nDescribe the image by detailing the color, shape, size, texture, quantity, text, spatial relationships of the objects and background:<|im_end|>\n<|im_start|>user\n";
+-            if (llm->enable_vision && conditioner_params.ref_images != nullptr && !conditioner_params.ref_images->empty()) {
++            // Reference images the DiT also sees come first, then images attached for
++            // the vision tower alone. Both reach the tower the same way; only the
++            // first group ever became reference latents.
++            std::vector<const sd::Tensor<float>*> vision_images;
++            if (conditioner_params.ref_images != nullptr) {
++                for (const auto& image : *conditioner_params.ref_images) {
++                    vision_images.push_back(&image);
++                }
++            }
++            if (conditioner_params.vlm_images != nullptr) {
++                for (const auto& image : *conditioner_params.vlm_images) {
++                    vision_images.push_back(&image);
++                }
++            }
++            if (llm->enable_vision && !vision_images.empty()) {
+                 std::string img_prompt        = "";
+                 const std::string placeholder = "<|image_pad|>";
+                 int min_pixels                = conditioner_params.ref_image_params.vlm_min_size;
+@@ -2546,8 +2564,8 @@ struct LLMEmbedder : public Conditioner {
+                     }
+                 }
+ 
+-                for (int i = 0; i < conditioner_params.ref_images->size(); i++) {
+-                    const auto& image = (*conditioner_params.ref_images)[i];
++                for (int i = 0; i < static_cast<int>(vision_images.size()); i++) {
++                    const auto& image = *vision_images[i];
+                     const int factor  = llm->config.vision.patch_size * llm->config.vision.spatial_merge_size;
+                     int height        = static_cast<int>(image.shape()[1]);
+                     int width         = static_cast<int>(image.shape()[0]);
+@@ -2559,7 +2577,7 @@ struct LLMEmbedder : public Conditioner {
+ 
+                     resize_image_dims(height, width, h_bar, w_bar, factor, min_pixels, max_pixels, resize_mode);
+ 
+-                    LOG_DEBUG("resize conditioner ref image %d from %dx%d to %dx%d", i, height, width, h_bar, w_bar);
++                    LOG_DEBUG("resize conditioner vision image %d from %dx%d to %dx%d", i, height, width, h_bar, w_bar);
+ 
+                     auto resized_image = clip_preprocess(image, w_bar, h_bar);
+                     auto image_embed   = llm->encode_image(n_threads, resized_image, false, true, true);
 diff --git a/src/model/diffusion/krea2.hpp b/src/model/diffusion/krea2.hpp
 index b3947b7..c260ddb 100644
 --- a/src/model/diffusion/krea2.hpp
@@ -671,7 +814,7 @@ index 69bcaa1..5eeda8d 100644
                  tensor_storage.ne[0]  = tensor_storage.ne[1];
                  tensor_storage.ne[1]  = 1;
 diff --git a/src/stable-diffusion.cpp b/src/stable-diffusion.cpp
-index 7370f6a..7c1083c 100644
+index 7370f6a..7ad1701 100644
 --- a/src/stable-diffusion.cpp
 +++ b/src/stable-diffusion.cpp
 @@ -2516,6 +2516,7 @@ public:
@@ -940,7 +1083,12 @@ index 7370f6a..7c1083c 100644
               sd_scheduler_name(sample_params->scheduler),
               sd_sample_method_name(sample_params->sample_method),
               sample_params->sample_steps,
-@@ -3721,7 +3825,7 @@ void sd_img_gen_params_init(sd_img_gen_params_t* sd_img_gen_params) {
+@@ -3718,10 +3822,12 @@ void sd_img_gen_params_init(sd_img_gen_params_t* sd_img_gen_params) {
+     sd_sample_params_init(&sd_img_gen_params->sample_params);
+     sd_img_gen_params->clip_skip           = -1;
+     sd_img_gen_params->ref_images_count    = 0;
++    sd_img_gen_params->vlm_images          = nullptr;
++    sd_img_gen_params->vlm_images_count    = 0;
      sd_img_gen_params->ref_image_args      = "";
      sd_img_gen_params->width               = 512;
      sd_img_gen_params->height              = 512;
@@ -949,7 +1097,30 @@ index 7370f6a..7c1083c 100644
      sd_img_gen_params->seed                = -1;
      sd_img_gen_params->batch_count         = 1;
      sd_img_gen_params->control_strength    = 0.9f;
-@@ -5072,9 +5176,15 @@ static std::optional<ImageGenerationLatents> prepare_image_generation_latents(sd
+@@ -4401,6 +4507,7 @@ struct ImageGenerationLatents {
+     sd::Tensor<float> video_positions;
+     sd::Tensor<float> control_image;
+     std::vector<sd::Tensor<float>> ref_images;
++    std::vector<sd::Tensor<float>> vlm_images;
+     std::vector<sd::Tensor<float>> ref_latents;
+     std::vector<sd::Tensor<float>> reference_audio_latents;
+     std::vector<MiniMaxH3ReferenceBlock> minimax_reference_blocks;
+@@ -5061,6 +5168,14 @@ static std::optional<ImageGenerationLatents> prepare_image_generation_latents(sd
+                                                           image_channels));
+     }
+ 
++    // Kept apart from ref_images so the reference encode loop below never sees
++    // them; these reach the vision tower and nothing else.
++    std::vector<sd::Tensor<float>> vlm_images;
++    for (int i = 0; i < sd_img_gen_params->vlm_images_count; i++) {
++        vlm_images.push_back(ensure_image_tensor_channels(sd_image_to_tensor(sd_img_gen_params->vlm_images[i]),
++                                                          image_channels));
++    }
++
+     if (ref_images.empty() && sd_version_is_unet_edit(sd_ctx->sd->version)) {
+         LOG_WARN("This model needs at least one reference image; using an empty reference");
+         ref_images.push_back(sd::zeros<float>({request->width, request->height, image_channels, 1}));
+@@ -5072,9 +5187,15 @@ static std::optional<ImageGenerationLatents> prepare_image_generation_latents(sd
          LOG_INFO("EDIT mode");
      }
  
@@ -966,7 +1137,7 @@ index 7370f6a..7c1083c 100644
              continue;
          }
          sd::Tensor<float> ref_latent;
-@@ -5096,6 +5206,21 @@ static std::optional<ImageGenerationLatents> prepare_image_generation_latents(sd
+@@ -5096,6 +5217,21 @@ static std::optional<ImageGenerationLatents> prepare_image_generation_latents(sd
              vae_height = round(vae_height / factor) * factor;
              vae_width  = round(vae_width / factor) * factor;
  
@@ -988,7 +1159,23 @@ index 7370f6a..7c1083c 100644
              auto resized_ref_img = sd::ops::interpolate(ref_images[i],
                                                          {static_cast<int>(vae_width),
                                                           static_cast<int>(vae_height),
-@@ -5698,6 +5823,7 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
+@@ -5198,6 +5334,7 @@ static std::optional<ImageGenerationLatents> prepare_image_generation_latents(sd
+     latents.img_uncond_concat_latent = std::move(img_uncond_concat_latent);
+     latents.control_image            = std::move(control_image_tensor);
+     latents.ref_images               = std::move(ref_images);
++    latents.vlm_images               = std::move(vlm_images);
+     latents.ref_latents              = std::move(ref_latents);
+ 
+     if (sd_version_is_inpaint(sd_ctx->sd->version)) {
+@@ -5227,6 +5364,7 @@ static std::optional<ImageGenerationEmbeds> prepare_image_generation_embeds(sd_c
+     if (ref_image_params.pass_to_vlm) {
+         condition_params.ref_images = &latents->ref_images;
+     }
++    condition_params.vlm_images = &latents->vlm_images;
+ 
+     condition_params.ref_image_params = ref_image_params;
+ 
+@@ -5698,6 +5836,7 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
                                                     latents.control_image,
                                                     request.control_strength,
                                                     request.guidance,
@@ -996,7 +1183,7 @@ index 7370f6a..7c1083c 100644
                                                     plan.eta,
                                                     request.shifted_timestep,
                                                     plan.sample_method,
-@@ -5734,11 +5860,37 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
+@@ -5734,11 +5873,37 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
          return false;
      }
  
@@ -1034,7 +1221,7 @@ index 7370f6a..7c1083c 100644
          LOG_INFO("hires fix: upscaling to %dx%d", request.hires.target_width, request.hires.target_height);
  
          std::unique_ptr<UpscalerGGML> hires_upscaler;
-@@ -5819,6 +5971,7 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
+@@ -5819,6 +5984,7 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
                                                              latents.control_image,
                                                              request.control_strength,
                                                              request.guidance,
@@ -1042,7 +1229,7 @@ index 7370f6a..7c1083c 100644
                                                              plan.eta,
                                                              request.shifted_timestep,
                                                              plan.sample_method,
-@@ -5832,7 +5985,9 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
+@@ -5832,7 +5998,9 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
                                                              1.f,
                                                              0,
                                                              static_cast<float>(request.fps),
@@ -1053,7 +1240,7 @@ index 7370f6a..7c1083c 100644
              int64_t hires_sample_end   = ggml_time_ms();
              if (!x_0.empty()) {
                  LOG_INFO("hires sampling %d/%d completed, taking %.2fs",
-@@ -5861,6 +6016,24 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
+@@ -5861,6 +6029,24 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
          return false;
      }
  
@@ -1078,7 +1265,7 @@ index 7370f6a..7c1083c 100644
      sd_ctx->sd->lora_stat();
  
      int64_t t1 = ggml_time_ms();
-@@ -6952,6 +7125,7 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
+@@ -6952,6 +7138,7 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
                                                             sd::Tensor<float>(),
                                                             0.f,
                                                             request.high_noise_guidance,
@@ -1086,7 +1273,7 @@ index 7370f6a..7c1083c 100644
                                                             plan.high_noise_eta,
                                                             request.shifted_timestep,
                                                             plan.high_noise_sample_method,
-@@ -6994,6 +7168,7 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
+@@ -6994,6 +7181,7 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
                                                          sd::Tensor<float>(),
                                                          0.f,
                                                          sd_vid_gen_params->sample_params.guidance,
@@ -1094,7 +1281,7 @@ index 7370f6a..7c1083c 100644
                                                          plan.eta,
                                                          sd_vid_gen_params->sample_params.shifted_timestep,
                                                          plan.sample_method,
-@@ -7132,6 +7307,7 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
+@@ -7132,6 +7320,7 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
                                              sd::Tensor<float>(),
                                              0.f,
                                              sd_vid_gen_params->sample_params.guidance,

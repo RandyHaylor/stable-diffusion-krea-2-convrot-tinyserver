@@ -465,9 +465,10 @@ def main() -> int:
                              and j["status"] == "completed"), None),
                20, "img2img-source-as-reference job to complete")
     referenced_source_request = find_generation_request_for_prompt("img2img-source-as-reference")
-    check("the source image is sent as a reference as well as an init image when requested",
-          referenced_source_request.get("extra_images") == referenced_source_request.get("init_images"),
-          f"extra_images count={len(referenced_source_request.get('extra_images', []))}")
+    check("the source image reaches the vision tower without becoming a DiT reference",
+          referenced_source_request.get("vlm_images") == referenced_source_request.get("init_images")
+          and "extra_images" not in referenced_source_request,
+          f"vlm_images count={len(referenced_source_request.get('vlm_images', []))}")
     check("sending the source as a reference keeps img2img rather than becoming an edit",
           "denoising_strength" in referenced_source_request
           and stub_state["generation_paths"][-1] == "/sdapi/v1/img2img",
@@ -488,17 +489,20 @@ def main() -> int:
           f"request count={len(hires_reference_requests)}")
     lowres_native_args = json.loads(hires_reference_requests[0]["prompt"]
                                     .split("<sd_cpp_extra_args>", 1)[1].split("</sd_cpp_extra_args>", 1)[0])
-    check("the low-res pass itself carries no reference and no hires block",
-          "extra_images" not in hires_reference_requests[0] and "hires" not in lowres_native_args,
+    check("the low-res pass itself carries no attachment and no hires block",
+          "extra_images" not in hires_reference_requests[0]
+          and "vlm_images" not in hires_reference_requests[0]
+          and "hires" not in lowres_native_args,
           f"keys={sorted(hires_reference_requests[0])} native={sorted(lowres_native_args)}")
-    check("the hires pass receives exactly one reference, the low-res result",
-          len(hires_reference_requests[1].get("extra_images", [])) == 1,
-          f"extra_images count={len(hires_reference_requests[1].get('extra_images', []))}")
+    check("the hires pass reads the low-res result for vision only, never as a DiT reference",
+          len(hires_reference_requests[1].get("vlm_images", [])) == 1
+          and "extra_images" not in hires_reference_requests[1],
+          f"vlm_images count={len(hires_reference_requests[1].get('vlm_images', []))}")
     hires_reference_native = json.loads(hires_reference_requests[1]["prompt"]
                                         .split("<sd_cpp_extra_args>", 1)[1].split("</sd_cpp_extra_args>", 1)[0])
-    check("a vision reference is kept out of the diffusion transformer",
-          "pass_to_dit=false" in hires_reference_native.get("ref_image_args", ""),
-          f"ref_image_args={hires_reference_native.get('ref_image_args')!r}")
+    check("a vision attachment needs no pass_to_dit workaround to stay out of the transformer",
+          "ref_image_args" not in hires_reference_native,
+          "its own channel is never encoded, so the reference preset does not apply to it")
 
     plain_hires_params = build_job_params("hires-without-reference")
     plain_hires_params["hires"] = True

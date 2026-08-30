@@ -30,7 +30,6 @@ import wd14_tagging
 from hires_staging import hires_settings_vary_from_main, select_loras_for_stage
 from image_metadata import cached_civitai_hash, embed_generation_metadata
 from krea2_edit_request import (
-    build_vision_only_ref_image_args,
     krea2_edit_native_args_fields,
     krea2_edit_payload_fields,
     krea2_edit_references,
@@ -623,24 +622,18 @@ class QueueManager:
             payload["denoising_strength"] = float(p["hires_denoise"])
             endpoint = "/sdapi/v1/img2img"
         if source_name:
-            source_image_base64 = load_output_image_as_base64(source_name)
-            payload["init_images"] = [source_image_base64]
-            # Krea2 conditions references through the VLM and the DiT, neither of
-            # which ever sees the init image; sending the source as a reference too
-            # is what gives those paths something to work from on an img2img run.
-            if p.get("img2img_use_vision_on_source"):
-                payload.setdefault("extra_images", []).append(source_image_base64)
+            payload["init_images"] = [load_output_image_as_base64(source_name)]
             payload["denoising_strength"] = float(p.get("img2img_denoise", 0.0))
             endpoint = "/sdapi/v1/img2img"
+        # vlm_images reach the vision tower and are never encoded into reference
+        # latents, so the source image and the first stage's output can be read
+        # without adding their tokens to the diffusion model's attention sequence.
+        source_image_name = str(p.get("source_image", "")).strip()
+        if source_image_name and p.get("img2img_use_vision_on_source"):
+            payload.setdefault("vlm_images", []).append(
+                load_output_image_as_base64(source_image_name))
         for reference_name in (reference_image_names or []):
-            payload.setdefault("extra_images", []).append(load_output_image_as_base64(reference_name))
-        # Images attached only so the VLM can read them must not also become
-        # reference latents; edit mode is the one case where they should.
-        if payload.get("extra_images") and not krea2_edit_fields:
-            native["ref_image_args"] = build_vision_only_ref_image_args(
-                int(p.get("grounding_px", 0)))
-            payload["prompt"] = (prompt_text + " <sd_cpp_extra_args>"
-                                 + json.dumps(native, separators=(",", ":")) + "</sd_cpp_extra_args>")
+            payload.setdefault("vlm_images", []).append(load_output_image_as_base64(reference_name))
         result = self.post_json_to_backend(endpoint, payload, timeout=7200)
         images = result.get("images", [])
         if not images:
