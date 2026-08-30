@@ -108,8 +108,10 @@ deliberately disabled for the native hires refinement stage.
 
 Edit mode is instruction-based editing, not img2img: the target starts as pure
 noise and the references condition it by two paths at once, VAE latent tokens for
-appearance and Qwen3-VL vision tokens for semantics. Enabling edit mode therefore
-takes precedence over an img2img source image, which is ignored for that request.
+appearance and Qwen3-VL vision tokens for semantics. That dual path is upstream's
+`krea2_edit` preset, not something added here. Because the target must begin as
+pure noise, edit mode refuses to use an img2img source as the starting latent —
+but that source's tags and vision tokens still work alongside it.
 
 Reference order is meaningful — the identity-edit LoRA was trained scene first,
 subject second. Each reference carries its own **fidelity**, which multiplies how
@@ -126,12 +128,17 @@ identity-edit LoRA was trained on `fit`.
 
 ### WD14 tagging
 
-Ticking **tag** on a Krea2 Edit reference, or **Tag source with WD14** on an
-img2img source, selects *which* images are read. A stage then has to ask for the
-result: **Append WD14 tags** feeds them to the main prompt, and the hires tag
-source can take them independently. When no stage consumes them the checkboxes
-show `(unused)` and the tagger is never loaded or run. The tags a request actually
-used are recorded in the job details and in the saved PNG.
+Every Krea2 Edit reference and the img2img source carries **Send WD14 tags to:
+stage 1 / hires**. Ticking a box is itself the decision to read that image, so an
+image routed nowhere is never tagged and the tagger is never loaded. An image can
+feed the hires prompt without the first stage's, or both.
+
+The first stage's own *output* has no panel, so it gets **Stage 1 WD14 tags** in
+the hires section: `not_used`, `append` or `prepend`. Prepending puts the observed
+content ahead of the instruction, which helps coherence on short prompts.
+
+Tags are read once per job even when an image is routed to both stages, and the
+tags a request actually used are recorded in the job details and the saved PNG.
 
 The tagger is WD ViT v3 (`models/wd14/`, gitignored), pinned to the CPU execution
 provider so it never competes for diffusion VRAM. It degrades to "no tags" rather
@@ -142,12 +149,14 @@ than failing a generation when the model files are absent.
 Each LoRA has independent **main** and **hires** checkboxes, so a LoRA can apply
 to either stage or both — turbo on the low-res pass alone, for example.
 
-A request carries one LoRA selection, one prompt and one `ref_image_args`, shared
-by both stages. So a differing LoRA selection, a hires prompt or negative prompt,
-a hires tag source other than `none`, or a **Hires reference size** other than
-`auto` all force the hires stage to run as its own request. That reloads weights
-and gives up the latent continuity of the native in-request hires path, so the UI
-warns with "Hires setting variation causing additional model load time".
+A request carries one LoRA selection, one prompt, one attachment list and one
+`ref_image_args`, all shared by both stages. So a differing LoRA selection, a
+hires prompt or negative prompt, tag or vision routing that differs between the
+stages, a **Stage 1 WD14 tags** mode other than `not_used`, or a **Hires
+reference size** other than `auto` all force the hires stage to run as its own
+request. That reloads weights and gives up the latent continuity of the native
+in-request hires path, so the UI warns with "Hires setting variation causing
+additional model load time". Routing the same image to both stages is free.
 
 **Hires reference size** is an edge length; the runtime budgets that many pixels
 squared when encoding each Krea2 Edit reference for the hires pass only. Reference
@@ -156,12 +165,24 @@ with the square of the total, so shrinking references is what makes room at a
 large hires target. At 1248×1824 a full-budget reference is roughly 4000 of about
 13000 tokens.
 
-**Get vision data from lowres for hires pass** runs the low-res stage first and
-lets the vision tower read its output. That image reaches the VLM only, never the
-DiT — attaching it as a reference latent as well is what used to exhaust VRAM on
-1024→1536 runs.
+**Vision tokens** travel on their own request channel, `vlm_images`, which the
+runtime reads with the vision tower and never VAE-encodes. They therefore cost
+nothing in the diffusion model's attention sequence. The img2img source carries
+**Send vision tokens to: stage 1 / hires**, and **Get vision data from lowres for
+hires pass** does the same for the first stage's output.
+
+Krea2 Edit references are different: the `krea2_edit` preset sends them to both
+the vision tower and the DiT, which is upstream's design for that model, so their
+vision is not routed through this channel and is not per-stage.
 
 ### img2img
+
+The source image feeds three independent things, each with its own control:
+**use as starting latent**, WD14 tag routing, and vision-token routing. Leaving
+the starting latent unticked while routing tags or vision gives a txt2img run
+conditioned on an image. Only the starting latent conflicts with Krea2 Edit,
+whose target has to begin as pure noise; tags and vision from the same image work
+alongside edit mode.
 
 **Img2img noise multiplier** scales the noise mixed into the encoded source,
 independently of the denoise strength. Denoise still picks where the sampler
