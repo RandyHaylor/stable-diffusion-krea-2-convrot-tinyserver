@@ -100,6 +100,11 @@ button.danger{background:#49252a;border-color:#813942}
 .lorarow input[type=number]{width:74px;flex:none;padding:5px 6px}
 .lorarow .loramain,.lorarow .lorahires{display:flex;align-items:center;gap:4px;flex:none;color:var(--muted);font-size:11px}
 .hires-variation-notice{margin:8px 0;padding:7px 9px;border-radius:6px;background:#2a2410;border:1px solid #5c4a15;color:#e8cf86;font-size:12px}
+.hires-section{margin:14px 0;padding:4px 12px 12px;border:1px solid #2b3444;border-radius:8px}
+.hires-section-head{display:flex;align-items:center;gap:8px;margin:10px 0 4px}
+.hires-section-head h2{margin:0}
+.hires-section-toggle{display:flex;align-items:center;flex:none}
+.hires-section-toggle input[type=checkbox]{width:auto;margin:0}
 .wd14-unused-notice{color:#e08a3c;font-size:11px;margin-left:4px;font-weight:600}
 .reference-fidelity-vram-notice{color:#e08a3c;font-size:11px;margin-left:4px;font-weight:600}
 #loginGate{position:fixed;inset:0;z-index:100;background:var(--bg);display:flex;align-items:center;justify-content:center}
@@ -242,40 +247,52 @@ button.danger{background:#49252a;border-color:#813942}
 
   <div class="checks">
     <label title="Add the WD14 tags from every ticked image to the main prompt. With this on, a prompt is optional."><input id="main_append_wd14_tags" type="checkbox" onchange="refreshNoticesThatDependOnStageSettings()"> Append WD14 tags</label>
-    <label><input id="hires" type="checkbox" onchange="refreshNoticesThatDependOnStageSettings()"> Hires pass</label>
-    <label><input id="save_lowres" type="checkbox"> Save low-res too</label>
-    <label title="Runs the low-res pass first and lets the vision model read its output, so the hires pass is conditioned on what the first stage actually produced. The image reaches the vision tower only, never the DiT."><input id="hires_use_vision_on_lowres" type="checkbox"> Get vision data from lowres for hires pass</label>
+  </div>
+
+  <div class="hires-section">
+    <div class="hires-section-head">
+      <label class="hires-section-toggle"><input id="hires" type="checkbox" onchange="refreshNoticesThatDependOnStageSettings()"></label>
+      <h2>Hires pass</h2>
+    </div>
+
+    <div id="hiresVariationNotice" class="hires-variation-notice" hidden>Hires setting variation causing additional model load time</div>
+
+    <div class="checks">
+      <label><input id="save_lowres" type="checkbox"> Save low-res too</label>
+      <label title="Runs the low-res pass first and lets the vision model read its output, so the hires pass is conditioned on what the first stage actually produced. The image reaches the vision tower only, never the DiT."><input id="hires_use_vision_on_lowres" type="checkbox"> Get vision data from lowres for hires pass</label>
+    </div>
+
+    <div class="fields">
+      <div><label for="hires_resolution">Hires resolution</label><div class="combo" data-field="hires_resolution"></div></div>
+      <div><label for="hires_steps">Hires steps</label><div class="combo" data-field="hires_steps"></div></div>
+      <div><label for="hires_denoise">Denoise</label><div class="combo" data-field="hires_denoise"></div></div>
+      <div><label for="hires_noise_multiplier">Hires noise multiplier</label><div class="combo" data-field="hires_noise_multiplier"></div></div>
+    </div>
+
+    <div class="fields">
+      <div><label for="hires_prompt">Hires prompt</label><input id="hires_prompt" value="" autocomplete="off" oninput="refreshHiresVariationNotice()"></div>
+      <div><label for="hires_prompt_mode">Hires prompt mode</label><div class="combo" data-field="hires_prompt_mode"></div></div>
+    </div>
+    <div class="fields">
+      <div><label for="hires_negative_prompt">Hires negative prompt</label><input id="hires_negative_prompt" value="" autocomplete="off" oninput="refreshHiresVariationNotice()"></div>
+      <div><label for="hires_negative_prompt_mode">Hires negative mode</label><div class="combo" data-field="hires_negative_prompt_mode"></div></div>
+    </div>
+    <div class="fields two">
+      <div><label for="hires_wd14_tag_source">Hires WD14 tags</label><div class="combo" data-field="hires_wd14_tag_source"></div></div>
+      <div><label for="hires_reference_encode_size" title="Edge length Krea2 Edit references are encoded at for the hires pass; the budget is that many pixels squared. Reference tokens share one attention sequence with the target, and its VRAM cost grows with the square of the total, so a smaller reference is what makes room at a large hires target. Auto keeps the full budget. Anything else runs the hires stage as its own request.">Hires reference size</label><div class="combo" data-field="hires_reference_encode_size"></div></div>
+    </div>
+
+    <div class="fields two">
+      <div><label for="hires_upscaler">Hires upscaler</label><div class="combo" data-field="hires_upscaler"></div></div>
+    </div>
+  </div>
+
+  <div class="fields two">
+    <div><label for="vae_tile_size">VAE tile size (latent; 32 = 256px)</label><div class="combo" data-field="vae_tile_size"></div></div>
   </div>
 
   <h2 style="margin-top:16px">LoRAs</h2>
   <div id="loraList" class="loralist">no LoRAs found in models/loras</div>
-
-  <div id="hiresVariationNotice" class="hires-variation-notice" hidden>Hires setting variation causing additional model load time</div>
-
-  <div class="fields">
-    <div><label for="hires_resolution">Hires resolution</label><div class="combo" data-field="hires_resolution"></div></div>
-    <div><label for="hires_steps">Hires steps</label><div class="combo" data-field="hires_steps"></div></div>
-    <div><label for="hires_denoise">Denoise</label><div class="combo" data-field="hires_denoise"></div></div>
-    <div><label for="hires_noise_multiplier">Hires noise multiplier</label><div class="combo" data-field="hires_noise_multiplier"></div></div>
-  </div>
-
-  <div class="fields">
-    <div><label for="hires_prompt">Hires prompt</label><input id="hires_prompt" value="" autocomplete="off" oninput="refreshHiresVariationNotice()"></div>
-    <div><label for="hires_prompt_mode">Hires prompt mode</label><div class="combo" data-field="hires_prompt_mode"></div></div>
-  </div>
-  <div class="fields">
-    <div><label for="hires_negative_prompt">Hires negative prompt</label><input id="hires_negative_prompt" value="" autocomplete="off" oninput="refreshHiresVariationNotice()"></div>
-    <div><label for="hires_negative_prompt_mode">Hires negative mode</label><div class="combo" data-field="hires_negative_prompt_mode"></div></div>
-  </div>
-  <div class="fields two">
-    <div><label for="hires_wd14_tag_source">Hires WD14 tags</label><div class="combo" data-field="hires_wd14_tag_source"></div></div>
-    <div><label for="hires_reference_encode_size" title="Edge length Krea2 Edit references are encoded at for the hires pass; the budget is that many pixels squared. Reference tokens share one attention sequence with the target, and its VRAM cost grows with the square of the total, so a smaller reference is what makes room at a large hires target. Auto keeps the full budget. Anything else runs the hires stage as its own request.">Hires reference size</label><div class="combo" data-field="hires_reference_encode_size"></div></div>
-  </div>
-
-  <div class="fields two">
-    <div><label for="hires_upscaler">Hires upscaler</label><div class="combo" data-field="hires_upscaler"></div></div>
-    <div><label for="vae_tile_size">VAE tile size (latent; 32 = 256px)</label><div class="combo" data-field="vae_tile_size"></div></div>
-  </div>
 </section>
 
 <div class="workspace-column">
