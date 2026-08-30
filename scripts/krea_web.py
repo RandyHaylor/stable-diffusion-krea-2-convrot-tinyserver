@@ -731,12 +731,16 @@ class QueueManager:
 
         first_stage_image = Image.open(OUTPUT_DIR / Path(first_stage_name).name).convert("RGB")
         resampled_canvas = first_stage_image.resize(target_size, Image.LANCZOS)
+        # Anchoring cuts each tile from a canvas already carrying the finished
+        # ones, so a tile starts from its neighbour's refined pixels where they
+        # overlap and has agreement to preserve rather than a conflict to invent.
+        tile_source_canvas = resampled_canvas.copy() if plan["anchored"] else resampled_canvas
 
         tile_loras = (select_loras_for_stage(p.get("extra_loras", []), "hires")
                       or select_loras_for_stage(p.get("extra_loras", []), "main"))
         refined_tiles = []
         for index, box in enumerate(tile_boxes):
-            tile_source = resampled_canvas.crop(box)
+            tile_source = tile_source_canvas.crop(box)
             tile_bytes = BytesIO()
             tile_source.save(tile_bytes, format="PNG")
             tile_payload = {
@@ -773,8 +777,10 @@ class QueueManager:
             encoded = tile_images[0]
             if encoded.startswith("data:"):
                 encoded = encoded.split(",", 1)[1]
-            refined_tiles.append(
-                Image.open(BytesIO(base64.b64decode(encoded))).convert("RGB"))
+            refined_tile = Image.open(BytesIO(base64.b64decode(encoded))).convert("RGB")
+            refined_tiles.append(refined_tile)
+            if plan["anchored"]:
+                tile_source_canvas.paste(refined_tile, (box[0], box[1]))
 
         blended = blend_tiles_into_canvas(refined_tiles, tile_boxes,
                                          target_size[0], target_size[1],

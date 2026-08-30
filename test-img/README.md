@@ -53,3 +53,29 @@ Crops 6 and 7 are the same blend on the same run: 7 is clean because it crosses
 flat fabric, 6 ghosts because it crosses the railing, the coat hem and a hand.
 Ghosting tracks structural disagreement between independently refined tiles, not
 the blend.
+
+## Anchoring fixes the ghosting
+
+Writing each finished tile back before the next is cut, so a tile starts from its
+neighbour's refined pixels, removes the ghost entirely. Same seeds, same four
+passes, same cost.
+
+| image | what it shows |
+|---|---|
+| `tiled-hires-9-crop-seam-independent-ghosting.png` | every tile cut from the same resampled canvas: the sleeve is translucent over the railing |
+| `tiled-hires-10-crop-seam-anchored-clean.png` | the same region anchored: railing continuous, grain crisp, no ghost |
+| `tiled-hires-11-anchored-1536x2304.png` | the full anchored result |
+
+A warning about the metric, kept because it nearly produced the wrong decision.
+Seam steepness rated the ghosted version *better*:
+
+| | seam row | rank among 2303 rows | detail |
+|---|---|---|---|
+| independent | 1.13x median | 986th | 4.489 |
+| anchored | 2.08x median | 542nd | 4.549 |
+
+A ghost is a smeared, low-contrast region, and blur reads as a low gradient, so
+the artefact scored well on a metric meant to detect artefacts. The anchored
+version's higher number is the railing edge being preserved rather than averaged
+away. Crops 9 and 10 are why anchoring is the default; the numbers alone argued
+the opposite.

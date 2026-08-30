@@ -286,6 +286,7 @@ button.danger{background:#49252a;border-color:#813942}
       <div><label for="hires_upscaler">Hires upscaler</label><div class="combo" data-field="hires_upscaler"></div></div>
       <div><label for="hires_tiling" title="Render the hires pass as overlapping tiles instead of inside the request. Each tile is the main pass's own resolution, so a target too large for one attention sequence becomes reachable. The cost is the latent continuity the in-request pass keeps: tiling decodes the first stage, resamples it up and repaints it, so it round trips through the VAE and runs one request per tile.">Hires tiling</label><div class="combo" data-field="hires_tiling"></div></div>
       <div><label for="hires_tile_overlap" title="How far neighbouring hires tiles share, in pixels of the target. The blend cross-fades across this band, so a wider overlap hides a disagreement between tiles over more pixels, at the cost of more tiles to cover the same target.">Hires tile overlap</label><div class="combo" data-field="hires_tile_overlap"></div></div>
+      <div><label for="hires_tile_source" title="Where each tile's starting pixels come from. Anchored writes each finished tile back before the next is cut, so a tile starts from its neighbour's refined pixels where they overlap and has agreement to preserve. Independent cuts every tile from the same resampled canvas, so neighbours can disagree about anything crossing their shared band, and the blend turns that disagreement into a translucent ghost rather than removing it. Both cost the same number of passes.">Hires tile source</label><div class="combo" data-field="hires_tile_source"></div></div>
     </div>
     <div id="hiresTilingNotice" class="hires-variation-notice" hidden></div>
   </div>
@@ -400,11 +401,12 @@ const COMBO_FIELDS = {
   img2img_source_vision_grounding_size: {value:'1024', options:['auto','384','512','768','1024','1215','1536','2048']},
   hires_tiling:       {value:'off', options:['off','on']},
   hires_tile_overlap: {value:'128', step:16, options:['64','96','128','192','256']},
+  hires_tile_source:  {value:'anchored', options:['anchored','independent']},
 };
 const NUMERIC_FIELDS = ['seed','steps','cfg','flow_shift','pag_scale','pag_start','pag_end','hires_steps','hires_denoise','vae_tile_size','img2img_denoise','img2img_noise_multiplier','grounding_px','beta_schedule_alpha','beta_schedule_beta','hires_noise_multiplier','hires_tile_overlap'];
 const TEXT_FIELDS = ['sampler','scheduler','hires_upscaler','extra_sample_args','pag_layers','fit_mode',
   'hires_prompt','hires_prompt_mode','hires_negative_prompt','hires_negative_prompt_mode','stage_one_wd14_tags','hires_vision_source',
-  'img2img_source_vision_grounding_size','hires_tiling'];
+  'img2img_source_vision_grounding_size','hires_tiling','hires_tile_source'];
 
 let openComboList = null;
 
@@ -965,7 +967,7 @@ function formatJobDetails(params){
     ['Hires reference size', p.hires && p.hires_reference_encode_size > 0
       ? p.hires_reference_encode_size : ''],
     ['Hires tiling', p.hires && p.hires_tiling === 'on'
-      ? `on, ${p.hires_tile_overlap ?? 128}px overlap` : ''],
+      ? `${p.hires_tile_source || 'independent'}, ${p.hires_tile_overlap ?? 128}px overlap` : ''],
     ['Detected WD14 tags', (p.wd14_tags || []).join(' | ')],
     ['VAE tile', p.vae_tile_size ?? ''],
   ];
@@ -1055,6 +1057,8 @@ function loadParamsIntoForm(p){
     p.img2img_source_vision_grounding_size || 'auto';
   $('hires_tiling').value = p.hires_tiling || 'off';
   $('hires_tile_overlap').value = p.hires_tile_overlap ?? 128;
+  // Params saved before anchoring existed were rendered from one static canvas.
+  $('hires_tile_source').value = p.hires_tile_source || 'independent';
   $('hires').checked = !!p.hires;
   $('save_lowres').checked = !!p.save_lowres;
   $('pag_enabled').checked = !!p.pag_enabled;

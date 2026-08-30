@@ -19,6 +19,20 @@ HIRES_TILING_MODES = ("off", "on")
 DEFAULT_HIRES_TILING_MODE = "off"
 DEFAULT_HIRES_TILE_OVERLAP_PIXELS = 128
 
+# How each tile's starting pixels are obtained.
+#
+# 'independent' cuts every tile from the same resampled canvas, so neighbours are
+# repainted with no knowledge of each other and can disagree about anything that
+# crosses their shared band. Cross-fading that disagreement turns a hard seam
+# into a translucent ghost rather than removing it.
+#
+# 'anchored' writes each finished tile back before the next is cut, so a tile's
+# starting pixels already contain its neighbour's refined content wherever they
+# overlap. The repaint then has agreement to preserve rather than a conflict to
+# invent. It costs nothing extra: the same number of passes, run in order.
+HIRES_TILE_SOURCE_MODES = ("independent", "anchored")
+DEFAULT_HIRES_TILE_SOURCE_MODE = "anchored"
+
 
 def hires_tile_size(params: dict) -> tuple[int, int]:
     """The tile the hires stage repaints in, defaulting to the main pass's size.
@@ -78,6 +92,14 @@ def renders_hires_by_tiling(params: dict) -> bool:
     return len(hires_tile_boxes_for_params(params)) > 1
 
 
+def anchors_each_hires_tile_to_its_neighbours(params: dict) -> bool:
+    """Whether a finished tile is written back before the next one is cut."""
+    requested = str(params.get("hires_tile_source", DEFAULT_HIRES_TILE_SOURCE_MODE))
+    if requested not in HIRES_TILE_SOURCE_MODES:
+        requested = DEFAULT_HIRES_TILE_SOURCE_MODE
+    return requested == "anchored"
+
+
 def describe_hires_tiling_plan(params: dict) -> dict:
     """The grid the hires stage will render, or nothing when it will not tile."""
     if not renders_hires_by_tiling(params):
@@ -94,4 +116,5 @@ def describe_hires_tiling_plan(params: dict) -> dict:
         "tile_width": tile_width,
         "tile_height": tile_height,
         "overlap_pixels": overlap,
+        "anchored": anchors_each_hires_tile_to_its_neighbours(params),
     }

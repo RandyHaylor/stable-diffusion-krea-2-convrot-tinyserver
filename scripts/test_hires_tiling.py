@@ -13,7 +13,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from hires_tiling import (  # noqa: E402
     DEFAULT_HIRES_TILE_OVERLAP_PIXELS,
+    HIRES_TILE_SOURCE_MODES,
     HIRES_TILING_MODES,
+    anchors_each_hires_tile_to_its_neighbours,
     describe_hires_tiling_plan,
     hires_tile_boxes_for_params,
     hires_tile_overlap_pixels,
@@ -113,6 +115,22 @@ def main() -> int:
     check("the plan is empty when tiling will not run",
           describe_hires_tiling_plan(params(hires_tiling="off")) == {},
           "no notice should be shown for a path that is not taken")
+
+    check("the tile source modes are the supported set",
+          HIRES_TILE_SOURCE_MODES == ("independent", "anchored"),
+          f"got {HIRES_TILE_SOURCE_MODES}")
+    check("tiles are anchored to their neighbours by default",
+          anchors_each_hires_tile_to_its_neighbours({}),
+          "cutting every tile from the same canvas is what produces ghosting")
+    check("independent tile sources can be asked for",
+          not anchors_each_hires_tile_to_its_neighbours(
+              {"hires_tile_source": "independent"}))
+    check("an unrecognised tile source falls back to the default",
+          anchors_each_hires_tile_to_its_neighbours({"hires_tile_source": "guesswork"}))
+    check("the plan reports whether tiles are anchored",
+          describe_hires_tiling_plan(params())["anchored"] is True
+          and describe_hires_tiling_plan(
+              params(hires_tile_source="independent"))["anchored"] is False)
 
     print()
     if failures:

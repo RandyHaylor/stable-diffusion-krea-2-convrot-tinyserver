@@ -56,11 +56,31 @@ STUB_CAPABILITIES = {
 }
 
 
-def solid_png_base64(width: int, height: int) -> str:
-    """A PNG of exactly the requested size, so returned images can be recombined."""
+def solid_png_base64(width: int, height: int, shade: int = 140) -> str:
+    """A PNG of exactly the requested size, so returned images can be recombined.
+
+    The shade varies per job so a tile written back into the canvas is
+    distinguishable from the pixels it replaced, which is what makes anchoring
+    observable from the requests the app sends.
+    """
     buffer = BytesIO()
-    Image.new("RGB", (max(1, width), max(1, height)), (40, 90, 140)).save(buffer, format="PNG")
+    colour = (40, 90, max(0, min(255, shade)))
+    Image.new("RGB", (max(1, width), max(1, height)), colour).save(buffer, format="PNG")
     return base64.b64encode(buffer.getvalue()).decode("ascii")
+
+
+def distinct_colour_count_of_base64_png(encoded: str) -> int:
+    """How many distinct colours a stub image contains.
+
+    Every stub render is a single flat colour, and the resample of one is still
+    flat, so a tile whose starting pixels are entirely resampled canvas has
+    exactly one colour. A second colour means part of it came from an already
+    finished tile, which is what anchoring does and nothing else would.
+    """
+    if encoded.startswith("data:"):
+        encoded = encoded.split(",", 1)[1]
+    pixels = Image.open(BytesIO(base64.b64decode(encoded))).convert("RGB")
+    return len(pixels.getcolors(maxcolors=1 << 20) or [])
 
 
 class StubKreaBackendHandler(BaseHTTPRequestHandler):
@@ -89,7 +109,7 @@ class StubKreaBackendHandler(BaseHTTPRequestHandler):
                     "first_stage": {"output_format": "png", "b64_json": ONE_PIXEL_PNG_BASE64},
                 })
                 return
-            rendered = solid_png_base64(job["width"], job["height"])
+            rendered = solid_png_base64(job["width"], job["height"], job["shade"])
             images = [{"index": 0, "b64_json": rendered}]
             if job["returns_lowres"]:
                 images.append({"index": 1, "b64_json": rendered})
@@ -126,6 +146,9 @@ class StubKreaBackendHandler(BaseHTTPRequestHandler):
                 # so a stub that ignored the requested size could not be assembled.
                 "width": int(request_body.get("width", 1) or 1),
                 "height": int(request_body.get("height", 1) or 1),
+                # A distinct shade per job, so a tile written back into the
+                # canvas can be told apart from what it replaced.
+                "shade": 60 + (stub_state["next_job_id"] * 17) % 180,
             }
             self.respond_with_json({"id": job_id, "poll_url": f"/sdcpp/v1/jobs/{job_id}"})
             return
@@ -596,6 +619,30 @@ def main() -> int:
     check("no tile request asks the runtime for its own hires pass",
           all("hires" not in request for request in tiled_hires_requests[1:]),
           "a nested hires inside a tile would double the upscale")
+    # Anchoring is observable from the requests alone: the stub gives each job its
+    # own shade, so a later tile whose starting pixels came from an earlier tile's
+    # output carries that earlier shade rather than the first stage's.
+    anchored_colour_counts = [distinct_colour_count_of_base64_png(request["init_image"])
+                              for request in tiled_hires_requests[1:]]
+    check("the first anchored tile starts from resampled canvas alone",
+          anchored_colour_counts[0] == 1,
+          f"got {anchored_colour_counts}")
+    check("every later anchored tile starts partly from a finished neighbour",
+          all(count > 1 for count in anchored_colour_counts[1:]),
+          f"colours per tile source: {anchored_colour_counts}")
+
+    independent_params = build_job_params("hires-tiled-independent")
+    independent_params.update({k: v for k, v in tiled_hires_params.items()
+                               if k != "prompt"})
+    independent_params["hires_tile_source"] = "independent"
+    run_job_and_wait(independent_params, "hires-tiled-independent")
+    independent_requests = find_all_generation_requests_for_prompt("hires-tiled-independent")
+    independent_colour_counts = [distinct_colour_count_of_base64_png(request["init_image"])
+                                 for request in independent_requests[1:]]
+    check("independent tiles all start from the resampled canvas alone",
+          all(count == 1 for count in independent_colour_counts),
+          f"colours per tile source: {independent_colour_counts}")
+
     tiled_hires_outputs = tiled_hires_job.get("outputs") or []
     check("a tiled hires job returns one recombined image",
           len(tiled_hires_outputs) == 1,
