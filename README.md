@@ -1,5 +1,13 @@
 # Krea 2 Raw INT8 ConvRot — local generation
 
+**Live web UI:** https://draft-pays-shades-unlimited.trycloudflare.com
+
+That is a Cloudflare quick tunnel to a server on a home machine. It is only up
+while the server is, and the URL changes every time the tunnel restarts, so a
+stale link here means the tunnel has been recycled — the current one is always in
+`.runtime/krea-web-credentials`, which is gitignored. Credentials are not
+published here.
+
 This workspace runs the community Krea 2 Raw INT8 ConvRot checkpoint with a
 CUDA build of `stable-diffusion.cpp`.
 
