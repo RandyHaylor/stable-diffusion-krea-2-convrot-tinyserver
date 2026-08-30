@@ -8,8 +8,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from prompt_composition import (  # noqa: E402
     HIRES_PROMPT_MODES,
+    HIRES_VISION_SOURCES,
     STAGE_ONE_TAG_MODES,
     apply_stage_one_tags,
+    hires_stage_uses_krea2_edit_references,
+    hires_vision_source_needs_the_first_stage_image,
     compose_hires_prompt,
     compose_prompt_with_tag_groups,
     describe_missing_prompt,
@@ -105,6 +108,24 @@ def main() -> int:
           "callers pass the pre-tag base; this function does not deduplicate")
     check("an unknown mode falls back to append rather than losing the text",
           compose_hires_prompt("a photo", "sharp focus", "nonsense", []) == "a photo, sharp focus")
+
+    check("the four hires vision sources are the supported set",
+          HIRES_VISION_SOURCES == ("img2img_source", "krea2edit_references",
+                                   "stage_one_output", "none"),
+          f"got {HIRES_VISION_SOURCES}")
+    check("only the krea2edit source sends references to the hires stage",
+          hires_stage_uses_krea2_edit_references("krea2edit_references")
+          and not hires_stage_uses_krea2_edit_references("img2img_source")
+          and not hires_stage_uses_krea2_edit_references("stage_one_output")
+          and not hires_stage_uses_krea2_edit_references("none"),
+          "the other three are the ways to keep edit references out of the hires sequence")
+    check("only the stage one source needs the first stage image on disk for vision",
+          hires_vision_source_needs_the_first_stage_image("stage_one_output")
+          and not hires_vision_source_needs_the_first_stage_image("img2img_source")
+          and not hires_vision_source_needs_the_first_stage_image("none"))
+    check("an unrecognised source sends nothing rather than guessing",
+          not hires_stage_uses_krea2_edit_references("nonsense")
+          and not hires_vision_source_needs_the_first_stage_image("nonsense"))
 
     check("the three stage one tag modes are the supported set",
           STAGE_ONE_TAG_MODES == ("not_used", "append", "prepend"),

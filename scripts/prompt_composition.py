@@ -16,6 +16,24 @@ DEFAULT_HIRES_PROMPT_MODE = "append"
 STAGE_ONE_TAG_MODES = ("not_used", "append", "prepend")
 DEFAULT_STAGE_ONE_TAG_MODE = "not_used"
 
+# What the hires stage is conditioned on besides its prompt. One request carries
+# one attachment list, so these are exclusive: picking any source other than the
+# edit references is also how those references are kept out of the hires
+# attention sequence, where they are the largest single cost.
+HIRES_VISION_SOURCES = ("img2img_source", "krea2edit_references",
+                        "stage_one_output", "none")
+DEFAULT_HIRES_VISION_SOURCE = "krea2edit_references"
+
+
+def hires_stage_uses_krea2_edit_references(hires_vision_source: str) -> bool:
+    """Whether the hires request should carry the Krea2 Edit references at all."""
+    return hires_vision_source == "krea2edit_references"
+
+
+def hires_vision_source_needs_the_first_stage_image(hires_vision_source: str) -> bool:
+    """Whether this source requires the first stage's output to exist as a file."""
+    return hires_vision_source == "stage_one_output"
+
 
 def compose_prompt_with_tag_groups(prompt: str, tag_groups: list[str]) -> str:
     """Join a prompt and each image's tags with single comma separation.

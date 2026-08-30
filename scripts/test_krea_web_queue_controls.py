@@ -478,7 +478,7 @@ def main() -> int:
     source_vision_to_hires_params["source_image"] = uploaded_source["name"]
     source_vision_to_hires_params["hires"] = True
     source_vision_to_hires_params["save_lowres"] = False
-    source_vision_to_hires_params["img2img_source_vision_to_hires"] = True
+    source_vision_to_hires_params["hires_vision_source"] = "img2img_source"
     client.post("/api/jobs", json={"params": source_vision_to_hires_params}, headers=session_headers)
     wait_until(lambda: next((j for j in client.get("/api/state", headers=session_headers).json()["history"]
                              if (j["params"] or {}).get("prompt") == "source-vision-to-hires-only"
@@ -498,7 +498,7 @@ def main() -> int:
     hires_reference_params = build_job_params("hires-lowres-reference")
     hires_reference_params["hires"] = True
     hires_reference_params["save_lowres"] = False
-    hires_reference_params["hires_use_vision_on_lowres"] = True
+    hires_reference_params["hires_vision_source"] = "stage_one_output"
     client.post("/api/jobs", json={"params": hires_reference_params}, headers=session_headers)
     wait_until(lambda: next((j for j in client.get("/api/state", headers=session_headers).json()["history"]
                              if (j["params"] or {}).get("prompt") == "hires-lowres-reference"
@@ -524,6 +524,29 @@ def main() -> int:
     check("a vision attachment needs no pass_to_dit workaround to stay out of the transformer",
           "ref_image_args" not in hires_reference_native,
           "its own channel is never encoded, so the reference preset does not apply to it")
+
+    no_edit_input_params = build_job_params("hires-without-edit-input")
+    no_edit_input_params["hires"] = True
+    no_edit_input_params["save_lowres"] = False
+    no_edit_input_params["krea2_edit_enabled"] = True
+    no_edit_input_params["krea2_edit_references"] = [{"filename": uploaded_source["name"],
+                                                      "ref_boost": 1}]
+    no_edit_input_params["hires_vision_source"] = "none"
+    client.post("/api/jobs", json={"params": no_edit_input_params}, headers=session_headers)
+    wait_until(lambda: next((j for j in client.get("/api/state", headers=session_headers).json()["history"]
+                             if (j["params"] or {}).get("prompt") == "hires-without-edit-input"
+                             and j["status"] == "completed"), None),
+               30, "hires-without-edit-input job to complete")
+    no_edit_input_requests = find_all_generation_requests_for_prompt("hires-without-edit-input")
+    check("declining edit input on the hires stage runs it as its own request",
+          len(no_edit_input_requests) == 2,
+          f"request count={len(no_edit_input_requests)}")
+    check("the first stage still carries the edit references",
+          len(no_edit_input_requests[0].get("extra_images", [])) == 1,
+          f"extra_images={len(no_edit_input_requests[0].get('extra_images', []))}")
+    check("the hires stage carries no edit references at all",
+          "extra_images" not in no_edit_input_requests[1],
+          "this is what keeps their tokens out of the hires attention sequence")
 
     plain_hires_params = build_job_params("hires-without-reference")
     plain_hires_params["hires"] = True

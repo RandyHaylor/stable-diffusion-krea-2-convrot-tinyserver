@@ -257,7 +257,6 @@ button.danger{background:#49252a;border-color:#813942}
 
     <div class="checks">
       <label><input id="save_lowres" type="checkbox"> Save low-res too</label>
-      <label title="Runs the low-res pass first and lets the vision model read its output, so the hires pass is conditioned on what the first stage actually produced. The image reaches the vision tower only, never the DiT."><input id="hires_use_vision_on_lowres" type="checkbox"> Get vision data from lowres for hires pass</label>
     </div>
 
     <div class="fields">
@@ -276,6 +275,7 @@ button.danger{background:#49252a;border-color:#813942}
       <div><label for="hires_negative_prompt_mode">Hires negative mode</label><div class="combo" data-field="hires_negative_prompt_mode"></div></div>
     </div>
     <div class="fields two">
+      <div><label for="hires_vision_source" title="What the hires pass is conditioned on besides its prompt. One request carries one attachment list, so these are exclusive. Anything other than the Krea2 Edit references also keeps those references out of the hires attention sequence, where they are the largest single cost.">Hires vision input</label><div class="combo" data-field="hires_vision_source"></div></div>
       <div><label for="stage_one_wd14_tags" title="Read WD14 tags from the first stage's own output and place them around the hires prompt. Reference and source images route their own tags with their own checkboxes.">Stage 1 WD14 tags</label><div class="combo" data-field="stage_one_wd14_tags"></div></div>
       <div><label for="hires_reference_encode_size" title="Edge length Krea2 Edit references are encoded at for the hires pass; the budget is that many pixels squared. Reference tokens share one attention sequence with the target, and its VRAM cost grows with the square of the total, so a smaller reference is what makes room at a large hires target. Auto keeps the full budget. Anything else runs the hires stage as its own request.">Hires reference size</label><div class="combo" data-field="hires_reference_encode_size"></div></div>
     </div>
@@ -330,7 +330,7 @@ button.danger{background:#49252a;border-color:#813942}
         <span id="selectedSourceResolution"></span>
         <button type="button" onclick="chooseSourceImage()">Load source image</button>
         <label class="source-choice-radio" title="Encode the source image and start the first stage from it instead of from noise. The denoise strength and noise multiplier below apply to it. Krea2 Edit needs a pure-noise target, so this is ignored while edit mode is on."><input id="img2img_source_as_starting_latent" type="checkbox"> Use as starting latent</label>
-        <span class="tag-routing" title="Let the vision model read the source image for the chosen stage. Krea2 never shows it the init image on its own, and this costs nothing in the diffusion model's attention sequence.">Vision tokens to: <label><input id="img2img_source_vision_to_stage_one" type="checkbox"> stage 1</label><label><input id="img2img_source_vision_to_hires" type="checkbox"> hires</label></span>
+        <span class="tag-routing" title="Let the vision model read the source image for the chosen stage. Krea2 never shows it the init image on its own, and this costs nothing in the diffusion model's attention sequence."><label><input id="img2img_source_vision_to_stage_one" type="checkbox"> Vision tokens to stage 1</label></span>
         <span class="tag-routing" title="Read WD14 danbooru tags from the source image and add them to the chosen stage's prompt.">WD14 tags to: <label><input id="img2img_source_tags_to_stage_one" type="checkbox"> stage 1</label><label><input id="img2img_source_tags_to_hires" type="checkbox"> hires</label></span>
         <input id="sourceImageFile" type="file" accept="image/png,image/jpeg,.png,.jpg,.jpeg" hidden>
       </div>
@@ -384,6 +384,7 @@ const COMBO_FIELDS = {
   hires_prompt_mode:          {value:'append', options:['append','prepend','replace']},
   hires_negative_prompt_mode: {value:'append', options:['append','prepend','replace']},
   stage_one_wd14_tags:        {value:'not_used', options:['not_used','append','prepend']},
+  hires_vision_source:        {value:'krea2edit_references', options:['img2img_source','krea2edit_references','stage_one_output','none']},
   hires_reference_encode_size:{value:'auto',   options:['auto','384','512','640','768','896','1024']},
   vae_tile_size:   {value:'32',  step:1,    options:['32','64','68','128','256','512']},
   img2img_denoise: {value:'0', step:0.05, options:['0','0.15','0.35','0.5','0.65','0.75','0.9']},
@@ -393,7 +394,7 @@ const COMBO_FIELDS = {
 };
 const NUMERIC_FIELDS = ['seed','steps','cfg','flow_shift','pag_scale','pag_start','pag_end','hires_steps','hires_denoise','vae_tile_size','img2img_denoise','img2img_noise_multiplier','grounding_px','beta_schedule_alpha','beta_schedule_beta','hires_noise_multiplier'];
 const TEXT_FIELDS = ['sampler','scheduler','hires_upscaler','extra_sample_args','pag_layers','fit_mode',
-  'hires_prompt','hires_prompt_mode','hires_negative_prompt','hires_negative_prompt_mode','stage_one_wd14_tags'];
+  'hires_prompt','hires_prompt_mode','hires_negative_prompt','hires_negative_prompt_mode','stage_one_wd14_tags','hires_vision_source'];
 
 let openComboList = null;
 
@@ -782,6 +783,7 @@ function hiresSettingsVaryFromMain(){
     || $('hires_prompt').value.trim() !== ''
     || $('hires_negative_prompt').value.trim() !== ''
     || $('stage_one_wd14_tags').value !== 'not_used'
+    || $('hires_vision_source').value !== 'krea2edit_references'
     || hiresReferenceEncodeSize() > 0;
 }
 
@@ -818,11 +820,9 @@ function collectParams(){
     hires: $('hires').checked,
     pag_enabled: $('pag_enabled').checked,
     save_lowres: $('save_lowres').checked,
-    hires_use_vision_on_lowres: $('hires_use_vision_on_lowres').checked,
     source_image: selectedSourceImage,
     img2img_source_as_starting_latent: $('img2img_source_as_starting_latent').checked,
     img2img_source_vision_to_stage_one: $('img2img_source_vision_to_stage_one').checked,
-    img2img_source_vision_to_hires: $('img2img_source_vision_to_hires').checked,
     img2img_source_tags_to_stage_one: $('img2img_source_tags_to_stage_one').checked,
     img2img_source_tags_to_hires: $('img2img_source_tags_to_hires').checked,
     krea2_edit_enabled: $('krea2_edit_enabled').checked,
@@ -886,16 +886,14 @@ function formatJobDetails(params){
     ['Img2img denoise', generationType === 'img2img' ? (p.img2img_denoise ?? '') : ''],
     ['Img2img noise multiplier', generationType === 'img2img' ? (p.img2img_noise_multiplier ?? '') : ''],
     ['Img2img vision on source',
-     p.img2img_source_vision_to_stage_one || p.img2img_source_vision_to_hires
-       ? [p.img2img_source_vision_to_stage_one ? 'stage 1' : '',
-          p.img2img_source_vision_to_hires ? 'hires' : ''].filter(Boolean).join(', ') : ''],
+     p.img2img_source_vision_to_stage_one ? 'stage 1' : ''],
+    ['Hires vision input', p.hires ? (p.hires_vision_source || '') : ''],
     ['Hires pass', p.hires ? 'On' : 'Off'],
     ['Hires resolution', p.hires ? `${p.hires_width || ''}×${p.hires_height || ''}` : ''],
     ['Hires steps', p.hires ? (p.hires_steps ?? '') : ''],
     ['Denoise', p.hires ? (p.hires_denoise ?? '') : ''],
     ['Hires noise multiplier', p.hires ? (p.hires_noise_multiplier ?? '') : ''],
     ['Save low-res', p.save_lowres ? 'Yes' : 'No'],
-    ['Vision data from lowres for hires', p.hires && p.hires_use_vision_on_lowres ? 'On' : ''],
 
     ['Hires prompt', p.hires ? (p.hires_prompt || '') : ''],
     ['Hires prompt mode', p.hires && p.hires_prompt ? (p.hires_prompt_mode || '') : ''],
@@ -990,7 +988,6 @@ function loadParamsIntoForm(p){
     ? p.hires_reference_encode_size : 'auto';
   $('hires').checked = !!p.hires;
   $('save_lowres').checked = !!p.save_lowres;
-  $('hires_use_vision_on_lowres').checked = !!p.hires_use_vision_on_lowres;
   $('pag_enabled').checked = !!p.pag_enabled;
   if (p.checkpoint) $('checkpointSelect').value = p.checkpoint;
   document.querySelectorAll('#loraList .lorarow').forEach(row => {
@@ -1005,7 +1002,6 @@ function loadParamsIntoForm(p){
   setSourceImage(p.source_image || '');
   $('img2img_source_as_starting_latent').checked = !!p.img2img_source_as_starting_latent;
   $('img2img_source_vision_to_stage_one').checked = !!p.img2img_source_vision_to_stage_one;
-  $('img2img_source_vision_to_hires').checked = !!p.img2img_source_vision_to_hires;
   $('img2img_source_tags_to_stage_one').checked = !!p.img2img_source_tags_to_stage_one;
   $('img2img_source_tags_to_hires').checked = !!p.img2img_source_tags_to_hires;
   refreshNoticesThatDependOnStageSettings();

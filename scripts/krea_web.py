@@ -38,8 +38,11 @@ from prompt_composition import (
     compose_hires_prompt,
     compose_prompt_with_tag_groups,
     describe_missing_prompt,
+    DEFAULT_HIRES_VISION_SOURCE,
     DEFAULT_STAGE_ONE_TAG_MODE,
     apply_stage_one_tags,
+    hires_stage_uses_krea2_edit_references,
+    hires_vision_source_needs_the_first_stage_image,
     stage_one_tags_need_the_first_stage_image,
 )
 
@@ -158,9 +161,16 @@ def images_giving_vision_to_stage(p: dict, stage: str) -> list[str]:
     instead, so they are not listed here.
     """
     source_image = str(p.get("source_image", "")).strip()
-    if source_image and p.get(f"img2img_source_vision_to_{stage}"):
-        return [source_image]
-    return []
+    if not source_image:
+        return []
+    if stage == "stage_one":
+        return [source_image] if p.get("img2img_source_vision_to_stage_one") else []
+    return [source_image] if hires_vision_source(p) == "img2img_source" else []
+
+
+def hires_vision_source(p: dict) -> str:
+    """Which single input the hires stage is conditioned on besides its prompt."""
+    return str(p.get("hires_vision_source", DEFAULT_HIRES_VISION_SOURCE))
 
 
 def tag_groups_for_images(image_names: list[str],
@@ -474,12 +484,14 @@ class QueueManager:
             hires_tag_groups=hires_image_tag_groups,
             main_vision_images=stage_one_vision_images,
             hires_vision_images=hires_vision_images,
+            hires_vision_source=hires_vision_source(p),
             stage_one_tag_mode=stage_one_tag_mode,
             hires_reference_encode_size=hires_reference_encode_size(p))
 
         # The first stage's result must exist as a file before the hires request can
         # reference or tag it, and a varying hires stage renders from it directly.
-        wants_lowres_reference = bool(hires_enabled and p.get("hires_use_vision_on_lowres"))
+        wants_lowres_reference = bool(
+            hires_enabled and hires_vision_source_needs_the_first_stage_image(hires_vision_source(p)))
         wants_stage_one_tags = hires_enabled and stage_one_tags_need_the_first_stage_image(
             stage_one_tag_mode)
         # Saving the low-res image does not need its own render: the runtime decodes
@@ -511,6 +523,9 @@ class QueueManager:
         outputs += self.run_single_backend_generation(
             p,
             hires=hires_enabled and not settings_vary,
+            sends_krea2_edit_references=(not settings_vary
+                                         or hires_stage_uses_krea2_edit_references(
+                                             hires_vision_source(p))),
             prefix=f"{stage}-{job['id']}",
             reference_image_names=lowres_reference_names,
             tag_groups=hires_image_tag_groups if settings_vary else main_tag_groups,
@@ -529,6 +544,7 @@ class QueueManager:
                                       upscale_from_image: str = "",
                                       lowres_prefix: str = "",
                                       vlm_image_names: list[str] | None = None,
+                                      sends_krea2_edit_references: bool = True,
                                       stage_one_output_tag_groups: list[str] | None = None,
                                       stage_one_tag_mode: str = DEFAULT_STAGE_ONE_TAG_MODE) -> list[str]:
         # The job params are what both the output panel and the saved PNG report, so
@@ -549,7 +565,8 @@ class QueueManager:
         # A hires stage running as its own request renders the upscale itself, so it
         # takes the hires resolution and the hires prompt rather than the main ones.
         renders_hires_upscale = bool(upscale_from_image)
-        krea2_edit_fields = krea2_edit_payload_fields(p, load_output_image_as_base64)
+        krea2_edit_fields = (krea2_edit_payload_fields(p, load_output_image_as_base64)
+                             if sends_krea2_edit_references else {})
         # The source image feeds three independent things; only its use as the
         # starting latent conflicts with edit mode, whose target starts as pure
         # noise, or with a hires pass that is upscaling the first stage instead.
