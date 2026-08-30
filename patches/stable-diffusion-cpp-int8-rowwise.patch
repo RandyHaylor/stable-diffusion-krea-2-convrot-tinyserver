@@ -207,7 +207,7 @@ index 34b4a01..4ad4a73 100644
      std::vector<sd_ref_video_t> ref_video_views;
      std::vector<sd_audio_t> ref_audio_views;
 diff --git a/examples/server/async_jobs.cpp b/examples/server/async_jobs.cpp
-index 1933dec..bd54587 100644
+index 1933dec..ecfd69b 100644
 --- a/examples/server/async_jobs.cpp
 +++ b/examples/server/async_jobs.cpp
 @@ -27,6 +27,8 @@ const char* async_job_status_name(AsyncJobStatus status) {
@@ -219,7 +219,7 @@ index 1933dec..bd54587 100644
          case AsyncJobStatus::Completed:
              return "completed";
          case AsyncJobStatus::Failed:
-@@ -161,15 +163,101 @@ json make_async_job_json(const AsyncJobManager& manager, const AsyncGenerationJo
+@@ -161,15 +163,122 @@ json make_async_job_json(const AsyncJobManager& manager, const AsyncGenerationJo
          result["error"]  = nullptr;
      }
  
@@ -287,6 +287,21 @@ index 1933dec..bd54587 100644
 +    input->vlm_images       = job.hires_vlm_image_views.empty() ? nullptr
 +                                                                : job.hires_vlm_image_views.data();
 +    input->vlm_images_count = static_cast<int>(job.hires_vlm_image_views.size());
++
++    job.hires_lora_views.clear();
++    job.hires_lora_views.reserve(job.hires_lora_paths.size());
++    for (size_t i = 0; i < job.hires_lora_paths.size(); ++i) {
++        sd_lora_t lora{};
++        lora.is_high_noise = false;
++        lora.multiplier    = i < job.hires_lora_multipliers.size()
++                                 ? job.hires_lora_multipliers[i]
++                                 : 1.0f;
++        lora.path          = job.hires_lora_paths[i].c_str();
++        job.hires_lora_views.push_back(lora);
++    }
++    input->applies_own_loras = job.hires_applies_own_loras;
++    input->loras      = job.hires_lora_views.empty() ? nullptr : job.hires_lora_views.data();
++    input->lora_count = static_cast<int>(job.hires_lora_views.size());
 +    return true;
 +}
 +
@@ -294,14 +309,20 @@ index 1933dec..bd54587 100644
 +                              AsyncGenerationJob& job,
 +                              const std::string& prompt,
 +                              const std::string& negative_prompt,
-+                              std::vector<SDImageOwner> vlm_images) {
++                              std::vector<SDImageOwner> vlm_images,
++                              bool applies_own_loras,
++                              std::vector<std::string> lora_paths,
++                              std::vector<float> lora_multipliers) {
 +    if (job.status != AsyncJobStatus::AwaitingHiresInput) {
 +        return false;
 +    }
-+    job.hires_prompt          = prompt;
-+    job.hires_negative_prompt = negative_prompt;
-+    job.hires_vlm_images      = std::move(vlm_images);
-+    job.hires_input_supplied  = true;
++    job.hires_prompt              = prompt;
++    job.hires_negative_prompt     = negative_prompt;
++    job.hires_vlm_images          = std::move(vlm_images);
++    job.hires_applies_own_loras   = applies_own_loras;
++    job.hires_lora_paths       = std::move(lora_paths);
++    job.hires_lora_multipliers = std::move(lora_multipliers);
++    job.hires_input_supplied   = true;
 +    manager.cv.notify_all();
 +    return true;
 +}
@@ -322,7 +343,7 @@ index 1933dec..bd54587 100644
  
      {
 diff --git a/examples/server/async_jobs.h b/examples/server/async_jobs.h
-index 89997a3..425ca37 100644
+index 89997a3..eb94a50 100644
 --- a/examples/server/async_jobs.h
 +++ b/examples/server/async_jobs.h
 @@ -20,6 +20,9 @@ enum class AsyncJobKind {
@@ -335,7 +356,7 @@ index 89997a3..425ca37 100644
      Completed,
      Failed,
      Cancelled,
-@@ -44,6 +47,15 @@ struct AsyncGenerationJob {
+@@ -44,6 +47,23 @@ struct AsyncGenerationJob {
      int result_fps         = 0;
      std::string error_code;
      std::string error_message;
@@ -348,10 +369,18 @@ index 89997a3..425ca37 100644
 +    std::string hires_negative_prompt;
 +    std::vector<SDImageOwner> hires_vlm_images;
 +    std::vector<sd_image_t> hires_vlm_image_views;
++    // sd_lora_t holds a borrowed path pointer, so the strings are owned here and
++    // the views built from them only once the reply has arrived. The flag marks
++    // the difference between a reply that named no LoRAs and one that named none
++    // on purpose, which must unload the first pass's.
++    bool hires_applies_own_loras = false;
++    std::vector<std::string> hires_lora_paths;
++    std::vector<float> hires_lora_multipliers;
++    std::vector<sd_lora_t> hires_lora_views;
  };
  
  struct AsyncJobManager {
-@@ -63,6 +75,11 @@ void purge_expired_jobs(AsyncJobManager& manager);
+@@ -63,6 +83,14 @@ void purge_expired_jobs(AsyncJobManager& manager);
  size_t count_pending_jobs(const AsyncJobManager& manager);
  std::string make_async_job_id(AsyncJobManager& manager);
  bool cancel_queued_job(AsyncJobManager& manager, AsyncGenerationJob& job);
@@ -359,7 +388,10 @@ index 89997a3..425ca37 100644
 +                              AsyncGenerationJob& job,
 +                              const std::string& prompt,
 +                              const std::string& negative_prompt,
-+                              std::vector<SDImageOwner> vlm_images);
++                              std::vector<SDImageOwner> vlm_images,
++                              bool applies_own_loras,
++                              std::vector<std::string> lora_paths,
++                              std::vector<float> lora_multipliers);
  json make_async_job_json(const AsyncJobManager& manager, const AsyncGenerationJob& job);
  bool execute_img_gen_job(ServerRuntime& runtime,
                           AsyncGenerationJob& job,
@@ -389,7 +421,7 @@ index 53ab20d..e3d4bb9 100644
      if (!request.gen_params.resolve_and_validate(IMG_GEN, "", runtime.ctx_params->hires_upscalers_dir, true)) {
          error_message = "invalid params";
 diff --git a/examples/server/routes_sdcpp.cpp b/examples/server/routes_sdcpp.cpp
-index 7253dbf..73850c6 100644
+index 7253dbf..c519510 100644
 --- a/examples/server/routes_sdcpp.cpp
 +++ b/examples/server/routes_sdcpp.cpp
 @@ -77,7 +77,9 @@ static fs::path resolve_display_model_path(const ServerRuntime& runtime) {
@@ -480,7 +512,7 @@ index 7253dbf..73850c6 100644
      svr.Post("/sdcpp/v1/img_gen", [runtime](const httplib::Request& req, httplib::Response& res) {
          try {
              if (req.body.empty()) {
-@@ -559,6 +577,52 @@ void register_sdcpp_api_endpoints(httplib::Server& svr, ServerRuntime& rt) {
+@@ -559,6 +577,69 @@ void register_sdcpp_api_endpoints(httplib::Server& svr, ServerRuntime& rt) {
          res.set_content(make_async_job_json(manager, *it->second).dump(), "application/json");
      });
  
@@ -511,6 +543,21 @@ index 7253dbf..73850c6 100644
 +            }
 +        }
 +
++        // The hires pass may run with its own LoRA selection, in the same shape
++        // the generation request uses. Omitted leaves the first pass's set alone.
++        const bool applies_own_loras = body.contains("lora") && body["lora"].is_array();
++        std::vector<std::string> lora_paths;
++        std::vector<float> lora_multipliers;
++        if (applies_own_loras) {
++            for (const auto& entry : body["lora"]) {
++                if (!entry.is_object() || !entry.contains("path") || !entry["path"].is_string()) {
++                    continue;
++                }
++                lora_paths.push_back(entry["path"].get<std::string>());
++                lora_multipliers.push_back(entry.value("multiplier", 1.0f));
++            }
++        }
++
 +        std::lock_guard<std::mutex> lock(manager.mutex);
 +        std::string job_id = req.matches[1];
 +        auto it            = manager.jobs.find(job_id);
@@ -520,7 +567,9 @@ index 7253dbf..73850c6 100644
 +            return;
 +        }
 +        if (!supply_hires_stage_input(manager, *it->second, prompt, negative_prompt,
-+                                      std::move(vlm_images))) {
++                                      std::move(vlm_images), applies_own_loras,
++                                      std::move(lora_paths),
++                                      std::move(lora_multipliers))) {
 +            res.status = 409;
 +            res.set_content(R"({"error":"job is not awaiting hires input"})", "application/json");
 +            return;
@@ -534,7 +583,7 @@ index 7253dbf..73850c6 100644
          AsyncJobManager& manager = *runtime->async_job_manager;
          std::lock_guard<std::mutex> lock(manager.mutex);
 diff --git a/include/stable-diffusion.h b/include/stable-diffusion.h
-index bab62ba..7f1f41a 100644
+index bab62ba..43288eb 100644
 --- a/include/stable-diffusion.h
 +++ b/include/stable-diffusion.h
 @@ -266,6 +266,15 @@ typedef struct {
@@ -561,7 +610,7 @@ index bab62ba..7f1f41a 100644
      const char* extra_sample_args;
  } sd_sample_params_t;
  
-@@ -355,6 +365,28 @@ enum sd_hires_upscaler_t {
+@@ -355,6 +365,38 @@ enum sd_hires_upscaler_t {
      SD_HIRES_UPSCALER_COUNT,
  };
  
@@ -576,6 +625,16 @@ index bab62ba..7f1f41a 100644
 +    // Images the vision tower reads for the hires pass only.
 +    sd_image_t* vlm_images;
 +    int vlm_images_count;
++    // Whether the fields below describe the hires pass's own LoRA selection.
++    // False leaves whatever the first pass loaded, which is the common case.
++    // True applies exactly what is given between the two passes, so a selection
++    // meant for one stage only is honoured without the latent leaving memory —
++    // including an EMPTY selection, which unloads the first pass's LoRAs rather
++    // than letting them carry over. A null pointer cannot express that
++    // difference, which is why this flag exists. Applying costs a LoRA reload.
++    bool applies_own_loras;
++    const sd_lora_t* loras;
++    int lora_count;
 +} sd_hires_stage_input_t;
 +
 +// Called once after the first stage is decoded and before the upscale, with that
@@ -590,7 +649,7 @@ index bab62ba..7f1f41a 100644
  typedef struct {
      bool enabled;
      enum sd_hires_upscaler_t upscaler;
-@@ -364,9 +396,24 @@ typedef struct {
+@@ -364,9 +406,24 @@ typedef struct {
      int target_height;
      int steps;
      float denoising_strength;
@@ -615,7 +674,7 @@ index bab62ba..7f1f41a 100644
  } sd_hires_params_t;
  
  typedef struct {
-@@ -378,6 +425,10 @@ typedef struct {
+@@ -378,6 +435,10 @@ typedef struct {
      sd_image_t init_image;
      sd_image_t* ref_images;
      int ref_images_count;
@@ -1204,7 +1263,7 @@ index 69bcaa1..5eeda8d 100644
                  tensor_storage.ne[0]  = tensor_storage.ne[1];
                  tensor_storage.ne[1]  = 1;
 diff --git a/src/stable-diffusion.cpp b/src/stable-diffusion.cpp
-index 7370f6a..a5fc0b8 100644
+index 7370f6a..025716d 100644
 --- a/src/stable-diffusion.cpp
 +++ b/src/stable-diffusion.cpp
 @@ -2516,6 +2516,7 @@ public:
@@ -1641,7 +1700,35 @@ index 7370f6a..a5fc0b8 100644
  static sd_image_t* decode_image_outputs(sd_ctx_t* sd_ctx,
                                          const GenerationRequest& request,
                                          const std::vector<sd::Tensor<float>>& final_latents,
-@@ -5698,6 +5905,7 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
+@@ -5600,6 +5807,27 @@ static std::vector<float> make_hires_sigma_schedule(sd_ctx_t* sd_ctx,
+                               sigmas.end());
+ }
+ 
++// Whether two LoRA selections would load different weights. Order is not
++// meaningful to the loader, so it is normalized away; a difference in path,
++// multiplier or high-noise flag is what matters.
++static bool lora_selection_differs(const sd_lora_t* first, uint32_t first_count,
++                                   const sd_lora_t* second, uint32_t second_count) {
++    if (first_count != second_count) {
++        return true;
++    }
++    auto comparable = [](const sd_lora_t* loras, uint32_t count) {
++        std::vector<std::string> keys;
++        keys.reserve(count);
++        for (uint32_t i = 0; i < count; ++i) {
++            keys.push_back(std::string(loras[i].is_high_noise ? "high_noise|" : "|")
++                           + std::to_string(loras[i].multiplier) + "|" + SAFE_STR(loras[i].path));
++        }
++        std::sort(keys.begin(), keys.end());
++        return keys;
++    };
++    return comparable(first, first_count) != comparable(second, second_count);
++}
++
+ SD_API bool generate_image(sd_ctx_t* sd_ctx,
+                            const sd_img_gen_params_t* sd_img_gen_params,
+                            sd_image_t** images_out,
+@@ -5698,6 +5926,7 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
                                                     latents.control_image,
                                                     request.control_strength,
                                                     request.guidance,
@@ -1649,7 +1736,7 @@ index 7370f6a..a5fc0b8 100644
                                                     plan.eta,
                                                     request.shifted_timestep,
                                                     plan.sample_method,
-@@ -5734,11 +5942,56 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
+@@ -5734,11 +5963,69 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
          return false;
      }
  
@@ -1699,6 +1786,19 @@ index 7370f6a..a5fc0b8 100644
 +            }
 +        }
 +
++        // The hires pass can run with its own LoRAs. Applied before the
++        // conditioning is re-encoded so both it and the sampling see the same
++        // weights, and skipped when the selection already matches, since
++        // applying costs a LoRA reload.
++        if (stage_input.applies_own_loras
++            && lora_selection_differs(sd_img_gen_params->loras, sd_img_gen_params->lora_count,
++                                      stage_input.loras,
++                                      static_cast<uint32_t>(stage_input.lora_count))) {
++            LOG_INFO("hires fix: applying %d LoRA(s) for the hires pass", stage_input.lora_count);
++            sd_ctx->sd->apply_loras(stage_input.loras,
++                                    static_cast<uint32_t>(stage_input.lora_count));
++        }
++
 +        if (!re_encode_hires_conditioning(sd_ctx, sd_img_gen_params, &request, &plan,
 +                                          &latents, ref_image_params, stage_input, &embeds)) {
 +            return false;
@@ -1706,7 +1806,7 @@ index 7370f6a..a5fc0b8 100644
          LOG_INFO("hires fix: upscaling to %dx%d", request.hires.target_width, request.hires.target_height);
  
          std::unique_ptr<UpscalerGGML> hires_upscaler;
-@@ -5777,6 +6030,9 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
+@@ -5777,6 +6064,9 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
                   hires_sigma_sched.size(),
                   request.hires.custom_sigmas_count > 0 ? ", custom_sigmas=true" : "");
  
@@ -1716,7 +1816,7 @@ index 7370f6a..a5fc0b8 100644
          std::vector<sd::Tensor<float>> hires_final_latents;
          int64_t hires_denoise_start = ggml_time_ms();
          for (int b = 0; b < (int)final_latents.size(); b++) {
-@@ -5819,20 +6075,23 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
+@@ -5819,20 +6109,23 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
                                                              latents.control_image,
                                                              request.control_strength,
                                                              request.guidance,
@@ -1742,7 +1842,7 @@ index 7370f6a..a5fc0b8 100644
              int64_t hires_sample_end   = ggml_time_ms();
              if (!x_0.empty()) {
                  LOG_INFO("hires sampling %d/%d completed, taking %.2fs",
-@@ -5861,6 +6120,24 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
+@@ -5861,6 +6154,24 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
          return false;
      }
  
@@ -1767,7 +1867,7 @@ index 7370f6a..a5fc0b8 100644
      sd_ctx->sd->lora_stat();
  
      int64_t t1 = ggml_time_ms();
-@@ -6952,6 +7229,7 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
+@@ -6952,6 +7263,7 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
                                                             sd::Tensor<float>(),
                                                             0.f,
                                                             request.high_noise_guidance,
@@ -1775,7 +1875,7 @@ index 7370f6a..a5fc0b8 100644
                                                             plan.high_noise_eta,
                                                             request.shifted_timestep,
                                                             plan.high_noise_sample_method,
-@@ -6994,6 +7272,7 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
+@@ -6994,6 +7306,7 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
                                                          sd::Tensor<float>(),
                                                          0.f,
                                                          sd_vid_gen_params->sample_params.guidance,
@@ -1783,7 +1883,7 @@ index 7370f6a..a5fc0b8 100644
                                                          plan.eta,
                                                          sd_vid_gen_params->sample_params.shifted_timestep,
                                                          plan.sample_method,
-@@ -7132,6 +7411,7 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
+@@ -7132,6 +7445,7 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
                                              sd::Tensor<float>(),
                                              0.f,
                                              sd_vid_gen_params->sample_params.guidance,

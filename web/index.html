@@ -781,7 +781,7 @@ function renderLoraList(loras){
       `<span class="loraname" title="${escapeHtml(lora.filename)}">${escapeHtml(lora.name)}</span>` +
       `<span class="lorasize">${lora.size_mb} MB</span>` +
       `<input type="number" id="loraStrength${index}" value="1" step="0.05" autocomplete="off">` +
-      `<label class="lorahires" title="Use this LoRA in the hires pass. A hires selection that differs from the main one reloads weights."><input type="checkbox" id="loraUseInHires${index}" onchange="refreshHiresVariationNotice()"> hires</label>` +
+      `<label class="lorahires" title="Use this LoRA in the hires pass. A hires selection that differs from the main one is applied between the two passes, which costs a LoRA reload but not the latent continuity: the job pauses rather than restarting. Ticking a LoRA for the main stage alone unloads it for the hires pass."><input type="checkbox" id="loraUseInHires${index}" onchange="refreshHiresVariationNotice()"> hires</label>` +
     `</div>`
   ).join('');
   refreshHiresVariationNotice();

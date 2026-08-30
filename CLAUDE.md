@@ -71,10 +71,16 @@ Native args reach the runtime inside the prompt, not the request body
     - Top-level body keys the SDAPI does not name are silently DROPPED
     - `extra_sample_args` lives under `sample_params` in that blob
 
-One request carries one LoRA set, one prompt, one `ref_image_args`
-    - Any per-stage variation forces the hires stage into its own request
-    - `hires_settings_vary_from_main()` decides
-    - Costs a weight reload and the in-request latent continuity
+One request carries one prompt and one `ref_image_args`, shared by both stages
+    - Per-stage variation makes the job PAUSE between its passes, not split into
+      two requests; `hires_settings_vary_from_main()` decides
+    - The latent is held across the pause, so continuity is never given up
+    - LoRAs ARE per stage: the hires selection rides the pause on
+      `sd_hires_stage_input_t.loras` and is applied between the passes
+    - An empty hires selection unloads the main pass's LoRAs rather than letting
+      them carry over, which is what `applies_own_loras` exists to express
+    - An identical selection is detected and skipped, so the common case reloads
+      nothing
 
 Krea2 Edit overrides img2img
     - Edit mode enabled -> the img2img source image is discarded

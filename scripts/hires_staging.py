@@ -1,12 +1,14 @@
 """Deciding how the hires stage runs relative to the main stage.
 
-The runtime applies LoRAs per request, not per stage, so a hires pass that needs
-a different LoRA selection cannot run inside the same request as the main pass.
-When the selections match, the native in-request hires path is used: it upscales
-in latent space and reuses the main pass's conditioning, which is why it holds
-detail so much better than a round trip through the VAE. Running the hires stage
-as its own request is therefore a deliberate downgrade, taken only when its
-settings vary from the main stage.
+One generation covers both passes. When the stages differ the job pauses between
+them: the runtime holds the first stage's latent while the app decides what the
+hires pass should be conditioned on, sends it back, and the refinement continues
+from that latent. Nothing is re-encoded from a decoded image, so the latent
+continuity that makes the in-request hires hold detail is never given up.
+
+What varies therefore decides whether the job pauses, not whether it splits into
+two requests. A differing LoRA selection is carried across that pause and applied
+between the passes, which costs a LoRA reload but not the continuity.
 """
 from __future__ import annotations
 
@@ -51,11 +53,10 @@ def hires_settings_vary_from_main(hires_enabled: bool,
                                   hires_reference_encode_size: int = 0) -> bool:
     """Whether the hires stage's settings differ from the main stage's.
 
-    One request carries one LoRA selection, one prompt and one ref_image_args,
-    all shared by the two stages. Any variation therefore has to run as its own
-    request, which reloads weights and costs the latent continuity the
-    in-request hires enjoys. Tag groups only vary when the two stages would end
-    up with different prompts, so routing the same image to both is free.
+    A difference means the job pauses between its passes so the hires stage can
+    be given its own prompt, attachments and LoRAs. Tag groups only vary when the
+    two stages would end up with different prompts, so routing the same image to
+    both is free.
     """
     if not hires_enabled:
         return False

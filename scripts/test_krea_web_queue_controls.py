@@ -809,6 +809,54 @@ def main() -> int:
               for supplied in stub_state["hires_inputs"]),
           f"hires prompts={[s.get('prompt', '')[:50] for s in stub_state['hires_inputs']]}")
 
+    # Per-stage LoRA selection. A hires-only LoRA used to be collected, shipped
+    # and then dropped by a main-only selector, so it applied to neither pass.
+    per_stage_lora_params = build_job_params("hires-per-stage-loras")
+    per_stage_lora_params["hires"] = True
+    per_stage_lora_params["save_lowres"] = False
+    per_stage_lora_params["extra_loras"] = [
+        {"filename": "Amatuer.safetensors", "strength": 0.8,
+         "use_in_main": True, "use_in_hires": False},
+        {"filename": "RealisticSnapshotKrea2.safetensors", "strength": 0.4,
+         "use_in_main": False, "use_in_hires": True},
+    ]
+    client.post("/api/jobs", json={"params": per_stage_lora_params}, headers=session_headers)
+    wait_until(lambda: next((j for j in client.get("/api/state", headers=session_headers).json()["history"]
+                             if (j["params"] or {}).get("prompt") == "hires-per-stage-loras"
+                             and j["status"] == "completed"), None),
+               30, "hires-per-stage-loras job to complete")
+    per_stage_requests = find_all_generation_requests_for_prompt("hires-per-stage-loras")
+    check("differing per-stage LoRAs still run as one paused generation",
+          len(per_stage_requests) == 1,
+          f"request count={len(per_stage_requests)}")
+    main_lora_paths = [entry["path"] for entry in per_stage_requests[0].get("lora", [])]
+    check("the main pass carries only the LoRA ticked for it",
+          main_lora_paths == ["Amatuer.safetensors"],
+          f"got {main_lora_paths}")
+
+    per_stage_hires_input = next(
+        (supplied for supplied in stub_state["hires_inputs"]
+         if any(entry.get("path") == "RealisticSnapshotKrea2.safetensors"
+                for entry in supplied.get("lora", []))),
+        None)
+    check("the hires-only LoRA reaches the hires stage through the paused exchange",
+          per_stage_hires_input is not None,
+          f"hires inputs carried loras: "
+          f"{[[e.get('path') for e in s.get('lora', [])] for s in stub_state['hires_inputs']]}")
+    if per_stage_hires_input is not None:
+        hires_lora_paths = [entry["path"] for entry in per_stage_hires_input["lora"]]
+        check("the hires stage carries only the LoRA ticked for it",
+              hires_lora_paths == ["RealisticSnapshotKrea2.safetensors"],
+              f"got {hires_lora_paths}")
+        check("the hires LoRA keeps its own strength",
+              per_stage_hires_input["lora"][0]["multiplier"] == 0.4,
+              f"got {per_stage_hires_input['lora'][0]}")
+    check("a hires-only LoRA is never silently dropped from both passes",
+          any(entry.get("path") == "RealisticSnapshotKrea2.safetensors"
+              for supplied in stub_state["hires_inputs"]
+              for entry in supplied.get("lora", [])),
+          "this is the regression: ticked, shipped, then applied nowhere")
+
     matching_hires_params = build_job_params("hires-matching-settings")
     matching_hires_params["hires"] = True
     matching_hires_params["save_lowres"] = False

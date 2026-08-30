@@ -188,6 +188,25 @@ def images_giving_vision_to_stage(p: dict, stage: str) -> list[str]:
     return [source_image] if hires_vision_source(p) == "img2img_source" else []
 
 
+def backend_loras_for_stage(p: dict, stage: str) -> list[dict]:
+    """One stage's LoRA selection, shaped for the backend and checked on disk.
+
+    A path is resolved inside the LoRA directory and refused if it escapes it or
+    is missing, so a selection that cannot be honoured fails the job rather than
+    being quietly dropped.
+    """
+    backend_loras = []
+    for extra_lora in select_loras_for_stage(p.get("extra_loras", []), stage):
+        lora_path = (LORA_DIR / Path(extra_lora["path"]).name).resolve()
+        if lora_path.parent != LORA_DIR.resolve() or not lora_path.is_file():
+            raise RuntimeError(
+                f"selected LoRA is not available in models/loras: {extra_lora['path']}")
+        backend_loras.append({"path": lora_path.name,
+                              "multiplier": extra_lora["multiplier"],
+                              "is_high_noise": False})
+    return backend_loras
+
+
 def hires_vision_source(p: dict) -> str:
     """Which single input the hires stage is conditioned on besides its prompt."""
     return str(p.get("hires_vision_source", DEFAULT_HIRES_VISION_SOURCE))
@@ -536,10 +555,14 @@ class QueueManager:
                 str(p.get("hires_negative_prompt_mode", "append")), [])
             hires_vision_names = ([stage_one_name] if wants_stage_one_vision
                                   else list(hires_vision_images))
+            # The hires stage carries its own LoRA selection. The runtime applies
+            # these between the passes, so a LoRA ticked for one stage only is
+            # honoured without the latent ever leaving memory.
             return {
                 "prompt": hires_prompt,
                 "negative_prompt": hires_negative_prompt,
                 "vlm_images": [load_output_image_as_base64(name) for name in hires_vision_names],
+                "lora": backend_loras_for_stage(p, "hires"),
             }
 
         stage = "krea-web-highres" if hires_enabled else "krea-web"
@@ -649,14 +672,7 @@ class QueueManager:
             "seed": int(p["seed"]), "batch_count": 1,
         }
         payload["sample_params"]["sample_steps"] = steps
-        requested_loras = []
-        for extra_lora in select_loras_for_stage(p.get("extra_loras", []), "main"):
-            lora_path = (LORA_DIR / Path(extra_lora["path"]).name).resolve()
-            if lora_path.parent != LORA_DIR.resolve() or not lora_path.is_file():
-                raise RuntimeError(f"selected LoRA is not available in models/loras: {extra_lora['path']}")
-            requested_loras.append({"path": lora_path.name,
-                                    "multiplier": extra_lora["multiplier"],
-                                    "is_high_noise": False})
+        requested_loras = backend_loras_for_stage(p, "main")
         if requested_loras:
             payload["lora"] = requested_loras
         print(f"[web] generation LoRAs: {[item['path'] for item in requested_loras]}", flush=True)
