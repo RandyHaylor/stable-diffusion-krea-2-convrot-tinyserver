@@ -1,5 +1,5 @@
 diff --git a/examples/common/common.cpp b/examples/common/common.cpp
-index 3581215..4cfb61b 100644
+index 3581215..9a769a7 100644
 --- a/examples/common/common.cpp
 +++ b/examples/common/common.cpp
 @@ -1954,6 +1954,7 @@ bool SDGenerationParams::from_json_str(
@@ -10,7 +10,7 @@ index 3581215..4cfb61b 100644
      load_if_exists("embed_image_metadata", embed_image_metadata);
  
      if (j.contains("hires") && j["hires"].is_object()) {
-@@ -1979,6 +1980,12 @@ bool SDGenerationParams::from_json_str(
+@@ -1979,6 +1980,15 @@ bool SDGenerationParams::from_json_str(
          if (hires_json.contains("denoising_strength") && hires_json["denoising_strength"].is_number()) {
              hires_denoising_strength = hires_json["denoising_strength"];
          }
@@ -20,10 +20,13 @@ index 3581215..4cfb61b 100644
 +        if (hires_json.contains("return_lowres_image")) {
 +            hires_return_lowres_image = hires_json["return_lowres_image"];
 +        }
++        if (hires_json.contains("await_stage_input")) {
++            hires_await_stage_input = hires_json["await_stage_input"];
++        }
          if (hires_json.contains("custom_sigmas") && hires_json["custom_sigmas"].is_array()) {
              hires_custom_sigmas = hires_json["custom_sigmas"].get<std::vector<float>>();
          }
-@@ -1991,6 +1998,7 @@ bool SDGenerationParams::from_json_str(
+@@ -1991,6 +2001,7 @@ bool SDGenerationParams::from_json_str(
                                          sd_sample_params_t& target_params,
                                          std::string& target_extra_sample_args,
                                          std::vector<int>& target_skip_layers,
@@ -31,7 +34,7 @@ index 3581215..4cfb61b 100644
                                          std::vector<float>* target_custom_sigmas) {
          if (sample_json.contains("sample_steps") && sample_json["sample_steps"].is_number_integer()) {
              target_params.sample_steps = sample_json["sample_steps"];
-@@ -2024,6 +2032,24 @@ bool SDGenerationParams::from_json_str(
+@@ -2024,6 +2035,24 @@ bool SDGenerationParams::from_json_str(
                  target_params.scheduler = tmp;
              }
          }
@@ -56,7 +59,7 @@ index 3581215..4cfb61b 100644
          if (sample_json.contains("guidance") && sample_json["guidance"].is_object()) {
              const json& guidance_json = sample_json["guidance"];
              if (guidance_json.contains("txt_cfg") && guidance_json["txt_cfg"].is_number()) {
-@@ -2054,13 +2080,14 @@ bool SDGenerationParams::from_json_str(
+@@ -2054,13 +2083,14 @@ bool SDGenerationParams::from_json_str(
      };
  
      if (j.contains("sample_params") && j["sample_params"].is_object()) {
@@ -72,7 +75,22 @@ index 3581215..4cfb61b 100644
                                   nullptr);
      }
  
-@@ -2507,6 +2534,11 @@ sd_img_gen_params_t SDGenerationParams::to_sd_img_gen_params_t() {
+@@ -2108,6 +2138,14 @@ bool SDGenerationParams::from_json_str(
+         LOG_ERROR("invalid ref_images");
+         return false;
+     }
++    // Vision-only attachments never set the target size, so they are parsed
++    // without the width and height the reference images establish.
++    int vlm_image_width  = 0;
++    int vlm_image_height = 0;
++    if (!parse_image_array_json_field(j, "vlm_images", 3, vlm_image_width, vlm_image_height, vlm_images)) {
++        LOG_ERROR("invalid vlm_images");
++        return false;
++    }
+     if (!parse_image_array_json_field(j, "control_frames", 3, width, height, control_frames)) {
+         LOG_ERROR("invalid control_frames");
+         return false;
+@@ -2507,6 +2545,11 @@ sd_img_gen_params_t SDGenerationParams::to_sd_img_gen_params_t() {
  
      ref_image_views.clear();
      ref_image_views.reserve(ref_images.size());
@@ -84,7 +102,7 @@ index 3581215..4cfb61b 100644
      for (auto& ref_image : ref_images) {
          ref_image_views.push_back(ref_image.get());
      }
-@@ -2521,6 +2553,10 @@ sd_img_gen_params_t SDGenerationParams::to_sd_img_gen_params_t() {
+@@ -2521,6 +2564,10 @@ sd_img_gen_params_t SDGenerationParams::to_sd_img_gen_params_t() {
      sample_params.guidance.slg.layer_count            = skip_layers.size();
      high_noise_sample_params.guidance.slg.layers      = high_noise_skip_layers.empty() ? nullptr : high_noise_skip_layers.data();
      high_noise_sample_params.guidance.slg.layer_count = high_noise_skip_layers.size();
@@ -95,7 +113,7 @@ index 3581215..4cfb61b 100644
      sample_params.custom_sigmas                       = custom_sigmas.empty() ? nullptr : custom_sigmas.data();
      sample_params.custom_sigmas_count                 = static_cast<int>(custom_sigmas.size());
      sample_params.extra_sample_args                   = extra_sample_args.empty() ? nullptr : extra_sample_args.c_str();
-@@ -2564,6 +2600,8 @@ sd_img_gen_params_t SDGenerationParams::to_sd_img_gen_params_t() {
+@@ -2564,6 +2611,8 @@ sd_img_gen_params_t SDGenerationParams::to_sd_img_gen_params_t() {
      params.init_image          = init_image.get();
      params.ref_images          = ref_image_views.empty() ? nullptr : ref_image_views.data();
      params.ref_images_count    = static_cast<int>(ref_image_views.size());
@@ -104,7 +122,7 @@ index 3581215..4cfb61b 100644
      params.ref_image_args      = ref_image_args.c_str();
      params.mask_image          = mask_image.get();
      params.width               = get_resolved_width();
-@@ -2590,6 +2628,8 @@ sd_img_gen_params_t SDGenerationParams::to_sd_img_gen_params_t() {
+@@ -2590,6 +2639,8 @@ sd_img_gen_params_t SDGenerationParams::to_sd_img_gen_params_t() {
      params.hires.target_height       = hires_height;
      params.hires.steps               = hires_steps;
      params.hires.denoising_strength  = hires_denoising_strength;
@@ -113,7 +131,7 @@ index 3581215..4cfb61b 100644
      params.hires.upscale_tile_size   = hires_upscale_tile_size;
      params.hires.custom_sigmas       = hires_custom_sigmas.empty() ? nullptr : hires_custom_sigmas.data();
      params.hires.custom_sigmas_count = static_cast<int>(hires_custom_sigmas.size());
-@@ -2619,6 +2659,11 @@ sd_vid_gen_params_t SDGenerationParams::to_sd_vid_gen_params_t() {
+@@ -2619,6 +2670,11 @@ sd_vid_gen_params_t SDGenerationParams::to_sd_vid_gen_params_t() {
  
      ref_image_views.clear();
      ref_image_views.reserve(ref_images.size());
@@ -125,7 +143,7 @@ index 3581215..4cfb61b 100644
      for (auto& image : ref_images) {
          ref_image_views.push_back(image.get());
      }
-@@ -2650,6 +2695,10 @@ sd_vid_gen_params_t SDGenerationParams::to_sd_vid_gen_params_t() {
+@@ -2650,6 +2706,10 @@ sd_vid_gen_params_t SDGenerationParams::to_sd_vid_gen_params_t() {
      sample_params.guidance.slg.layer_count            = skip_layers.size();
      high_noise_sample_params.guidance.slg.layers      = high_noise_skip_layers.empty() ? nullptr : high_noise_skip_layers.data();
      high_noise_sample_params.guidance.slg.layer_count = high_noise_skip_layers.size();
@@ -136,7 +154,7 @@ index 3581215..4cfb61b 100644
      sample_params.custom_sigmas                       = custom_sigmas.empty() ? nullptr : custom_sigmas.data();
      sample_params.custom_sigmas_count                 = static_cast<int>(custom_sigmas.size());
      sample_params.extra_sample_args                   = extra_sample_args.empty() ? nullptr : extra_sample_args.c_str();
-@@ -2692,6 +2741,8 @@ sd_vid_gen_params_t SDGenerationParams::to_sd_vid_gen_params_t() {
+@@ -2692,6 +2752,8 @@ sd_vid_gen_params_t SDGenerationParams::to_sd_vid_gen_params_t() {
      params.hires.target_height       = hires_height;
      params.hires.steps               = hires_steps;
      params.hires.denoising_strength  = hires_denoising_strength;
@@ -146,7 +164,7 @@ index 3581215..4cfb61b 100644
      params.hires.custom_sigmas       = hires_custom_sigmas.empty() ? nullptr : hires_custom_sigmas.data();
      params.hires.custom_sigmas_count = static_cast<int>(hires_custom_sigmas.size());
 diff --git a/examples/common/common.h b/examples/common/common.h
-index 34b4a01..c21de30 100644
+index 34b4a01..68d882f 100644
 --- a/examples/common/common.h
 +++ b/examples/common/common.h
 @@ -223,6 +223,8 @@ struct SDGenerationParams {
@@ -158,16 +176,17 @@ index 34b4a01..c21de30 100644
  
      std::vector<float> custom_sigmas;
  
-@@ -263,6 +265,8 @@ struct SDGenerationParams {
+@@ -263,6 +265,9 @@ struct SDGenerationParams {
      int hires_height               = 0;
      int hires_steps                = 0;
      float hires_denoising_strength = 0.7f;
 +    float hires_noise_multiplier   = 1.0f;
 +    bool hires_return_lowres_image = false;
++    bool hires_await_stage_input   = false;
      int hires_upscale_tile_size    = 128;
      std::vector<float> hires_custom_sigmas;
  
-@@ -278,6 +282,7 @@ struct SDGenerationParams {
+@@ -278,6 +283,7 @@ struct SDGenerationParams {
      SDImageOwner init_image;
      SDImageOwner end_image;
      std::vector<SDImageOwner> ref_images;
@@ -175,7 +194,7 @@ index 34b4a01..c21de30 100644
      std::vector<std::vector<SDImageOwner>> ref_videos;
      std::vector<SDAudioOwner> ref_video_audios;
      std::vector<SDAudioOwner> ref_audios;
-@@ -289,6 +294,7 @@ struct SDGenerationParams {
+@@ -289,6 +295,7 @@ struct SDGenerationParams {
  
      // Backing storage for sd_img_gen_params_t view fields.
      std::vector<sd_image_t> ref_image_views;
@@ -183,6 +202,163 @@ index 34b4a01..c21de30 100644
      std::vector<std::vector<sd_image_t>> ref_video_frame_views;
      std::vector<sd_ref_video_t> ref_video_views;
      std::vector<sd_audio_t> ref_audio_views;
+diff --git a/examples/server/async_jobs.cpp b/examples/server/async_jobs.cpp
+index 1933dec..bd54587 100644
+--- a/examples/server/async_jobs.cpp
++++ b/examples/server/async_jobs.cpp
+@@ -27,6 +27,8 @@ const char* async_job_status_name(AsyncJobStatus status) {
+             return "queued";
+         case AsyncJobStatus::Generating:
+             return "generating";
++        case AsyncJobStatus::AwaitingHiresInput:
++            return "awaiting_hires_input";
+         case AsyncJobStatus::Completed:
+             return "completed";
+         case AsyncJobStatus::Failed:
+@@ -161,15 +163,101 @@ json make_async_job_json(const AsyncJobManager& manager, const AsyncGenerationJo
+         result["error"]  = nullptr;
+     }
+ 
++    if (job.status == AsyncJobStatus::AwaitingHiresInput) {
++        result["first_stage"] = {
++            {"output_format", "png"},
++            {"b64_json", job.first_stage_image_b64},
++        };
++    }
++
+     return result;
+ }
+ 
++// Everything the parked callback needs; the job holds the reply, the manager
++// holds the lock and the condition variable it waits on.
++struct HiresStageInputWait {
++    AsyncJobManager* manager = nullptr;
++    AsyncGenerationJob* job  = nullptr;
++};
++
++// Runs on the worker thread between the two passes, while the first stage's
++// latent is still held by generate_image. Publishes the decoded first stage,
++// then blocks until the caller replies or the job is cancelled.
++static bool wait_for_hires_stage_input(const sd_image_t* first_stage_image,
++                                       sd_hires_stage_input_t* input,
++                                       void* user_data) {
++    auto* wait = static_cast<HiresStageInputWait*>(user_data);
++    if (wait == nullptr || wait->manager == nullptr || wait->job == nullptr) {
++        return false;
++    }
++    AsyncJobManager& manager = *wait->manager;
++    AsyncGenerationJob& job  = *wait->job;
++
++    std::string first_stage_image_b64;
++    if (first_stage_image != nullptr && first_stage_image->data != nullptr) {
++        auto image_bytes = encode_image_to_vector(EncodedImageFormat::PNG,
++                                                  first_stage_image->data,
++                                                  static_cast<int>(first_stage_image->width),
++                                                  static_cast<int>(first_stage_image->height),
++                                                  static_cast<int>(first_stage_image->channel),
++                                                  "");
++        first_stage_image_b64 = base64_encode(image_bytes);
++    }
++
++    std::unique_lock<std::mutex> lock(manager.mutex);
++    job.first_stage_image_b64 = std::move(first_stage_image_b64);
++    job.status                = AsyncJobStatus::AwaitingHiresInput;
++    manager.cv.notify_all();
++    manager.cv.wait(lock, [&] {
++        return job.hires_input_supplied || job.status == AsyncJobStatus::Cancelled || manager.stop;
++    });
++    if (job.status == AsyncJobStatus::Cancelled || manager.stop) {
++        return false;
++    }
++    job.status = AsyncJobStatus::Generating;
++
++    job.hires_vlm_image_views.clear();
++    job.hires_vlm_image_views.reserve(job.hires_vlm_images.size());
++    for (auto& image : job.hires_vlm_images) {
++        job.hires_vlm_image_views.push_back(image.get());
++    }
++    input->prompt           = job.hires_prompt.empty() ? nullptr : job.hires_prompt.c_str();
++    input->negative_prompt  = job.hires_negative_prompt.empty() ? nullptr
++                                                                : job.hires_negative_prompt.c_str();
++    input->vlm_images       = job.hires_vlm_image_views.empty() ? nullptr
++                                                                : job.hires_vlm_image_views.data();
++    input->vlm_images_count = static_cast<int>(job.hires_vlm_image_views.size());
++    return true;
++}
++
++bool supply_hires_stage_input(AsyncJobManager& manager,
++                              AsyncGenerationJob& job,
++                              const std::string& prompt,
++                              const std::string& negative_prompt,
++                              std::vector<SDImageOwner> vlm_images) {
++    if (job.status != AsyncJobStatus::AwaitingHiresInput) {
++        return false;
++    }
++    job.hires_prompt          = prompt;
++    job.hires_negative_prompt = negative_prompt;
++    job.hires_vlm_images      = std::move(vlm_images);
++    job.hires_input_supplied  = true;
++    manager.cv.notify_all();
++    return true;
++}
++
+ bool execute_img_gen_job(ServerRuntime& runtime,
+                          AsyncGenerationJob& job,
+                          std::vector<std::string>& output_images,
+                          std::string& error_message) {
+     sd_img_gen_params_t params = job.img_gen.to_sd_img_gen_params_t();
+ 
++    HiresStageInputWait hires_stage_input_wait{runtime.async_job_manager, &job};
++    if (job.img_gen.gen_params.hires_await_stage_input && params.hires.enabled) {
++        params.hires.stage_input_cb           = wait_for_hires_stage_input;
++        params.hires.stage_input_cb_user_data = &hires_stage_input_wait;
++    }
++
+     SDImageVec results;
+ 
+     {
+diff --git a/examples/server/async_jobs.h b/examples/server/async_jobs.h
+index 89997a3..425ca37 100644
+--- a/examples/server/async_jobs.h
++++ b/examples/server/async_jobs.h
+@@ -20,6 +20,9 @@ enum class AsyncJobKind {
+ enum class AsyncJobStatus {
+     Queued,
+     Generating,
++    // The first pass is done and its latent is still held; the job resumes when
++    // the caller posts what the hires pass should be conditioned on.
++    AwaitingHiresInput,
+     Completed,
+     Failed,
+     Cancelled,
+@@ -44,6 +47,15 @@ struct AsyncGenerationJob {
+     int result_fps         = 0;
+     std::string error_code;
+     std::string error_message;
++
++    // Set while the job is parked between passes. The image is what the first
++    // pass produced; the reply fields are what the caller sends back.
++    std::string first_stage_image_b64;
++    bool hires_input_supplied = false;
++    std::string hires_prompt;
++    std::string hires_negative_prompt;
++    std::vector<SDImageOwner> hires_vlm_images;
++    std::vector<sd_image_t> hires_vlm_image_views;
+ };
+ 
+ struct AsyncJobManager {
+@@ -63,6 +75,11 @@ void purge_expired_jobs(AsyncJobManager& manager);
+ size_t count_pending_jobs(const AsyncJobManager& manager);
+ std::string make_async_job_id(AsyncJobManager& manager);
+ bool cancel_queued_job(AsyncJobManager& manager, AsyncGenerationJob& job);
++bool supply_hires_stage_input(AsyncJobManager& manager,
++                              AsyncGenerationJob& job,
++                              const std::string& prompt,
++                              const std::string& negative_prompt,
++                              std::vector<SDImageOwner> vlm_images);
+ json make_async_job_json(const AsyncJobManager& manager, const AsyncGenerationJob& job);
+ bool execute_img_gen_job(ServerRuntime& runtime,
+                          AsyncGenerationJob& job,
 diff --git a/examples/server/routes_sdapi.cpp b/examples/server/routes_sdapi.cpp
 index 53ab20d..e3d4bb9 100644
 --- a/examples/server/routes_sdapi.cpp
@@ -209,7 +385,7 @@ index 53ab20d..e3d4bb9 100644
      if (!request.gen_params.resolve_and_validate(IMG_GEN, "", runtime.ctx_params->hires_upscalers_dir, true)) {
          error_message = "invalid params";
 diff --git a/examples/server/routes_sdcpp.cpp b/examples/server/routes_sdcpp.cpp
-index 7253dbf..e7bb6e8 100644
+index 7253dbf..73850c6 100644
 --- a/examples/server/routes_sdcpp.cpp
 +++ b/examples/server/routes_sdcpp.cpp
 @@ -77,7 +77,9 @@ static fs::path resolve_display_model_path(const ServerRuntime& runtime) {
@@ -300,8 +476,61 @@ index 7253dbf..e7bb6e8 100644
      svr.Post("/sdcpp/v1/img_gen", [runtime](const httplib::Request& req, httplib::Response& res) {
          try {
              if (req.body.empty()) {
+@@ -559,6 +577,52 @@ void register_sdcpp_api_endpoints(httplib::Server& svr, ServerRuntime& rt) {
+         res.set_content(make_async_job_json(manager, *it->second).dump(), "application/json");
+     });
+ 
++    svr.Post(R"(/sdcpp/v1/jobs/([A-Za-z0-9_\-]+)/hires-input)", [runtime](const httplib::Request& req, httplib::Response& res) {
++        AsyncJobManager& manager = *runtime->async_job_manager;
++
++        json body;
++        try {
++            body = json::parse(req.body);
++        } catch (const std::exception&) {
++            res.status = 400;
++            res.set_content(R"({"error":"invalid json"})", "application/json");
++            return;
++        }
++
++        const std::string prompt = body.value("prompt", std::string());
++        const std::string negative_prompt = body.value("negative_prompt", std::string());
++        std::vector<SDImageOwner> vlm_images;
++        if (body.contains("vlm_images") && body["vlm_images"].is_array()) {
++            for (const auto& encoded : body["vlm_images"]) {
++                if (!encoded.is_string()) {
++                    continue;
++                }
++                SDImageOwner image_owner;
++                if (decode_base64_image(encoded.get<std::string>(), 3, 0, 0, image_owner)) {
++                    vlm_images.push_back(std::move(image_owner));
++                }
++            }
++        }
++
++        std::lock_guard<std::mutex> lock(manager.mutex);
++        std::string job_id = req.matches[1];
++        auto it            = manager.jobs.find(job_id);
++        if (it == manager.jobs.end()) {
++            res.status = 404;
++            res.set_content(R"({"error":"job not found"})", "application/json");
++            return;
++        }
++        if (!supply_hires_stage_input(manager, *it->second, prompt, negative_prompt,
++                                      std::move(vlm_images))) {
++            res.status = 409;
++            res.set_content(R"({"error":"job is not awaiting hires input"})", "application/json");
++            return;
++        }
++
++        res.status = 200;
++        res.set_content(make_async_job_json(manager, *it->second).dump(), "application/json");
++    });
++
+     svr.Post(R"(/sdcpp/v1/jobs/([A-Za-z0-9_\-]+)/cancel)", [runtime](const httplib::Request& req, httplib::Response& res) {
+         AsyncJobManager& manager = *runtime->async_job_manager;
+         std::lock_guard<std::mutex> lock(manager.mutex);
 diff --git a/include/stable-diffusion.h b/include/stable-diffusion.h
-index bab62ba..c57b765 100644
+index bab62ba..1c14c57 100644
 --- a/include/stable-diffusion.h
 +++ b/include/stable-diffusion.h
 @@ -266,6 +266,15 @@ typedef struct {
@@ -328,7 +557,36 @@ index bab62ba..c57b765 100644
      const char* extra_sample_args;
  } sd_sample_params_t;
  
-@@ -364,7 +374,14 @@ typedef struct {
+@@ -355,6 +365,28 @@ enum sd_hires_upscaler_t {
+     SD_HIRES_UPSCALER_COUNT,
+ };
+ 
++// What the hires pass is conditioned on, supplied up front or decided by the
++// callback below once the first stage has been seen.
++typedef struct {
++    // Empty reuses the first stage's conditioning; anything else is encoded
++    // fresh between the two passes, which is what lets the stages differ
++    // without the latent ever leaving memory.
++    const char* prompt;
++    const char* negative_prompt;
++    // Images the vision tower reads for the hires pass only.
++    sd_image_t* vlm_images;
++    int vlm_images_count;
++} sd_hires_stage_input_t;
++
++// Called once after the first stage is decoded and before the upscale, with that
++// image. Whatever it writes into `input` conditions the hires pass, so a caller
++// can inspect what the first stage actually produced — tag it, describe it — and
++// steer the refinement on that. The latent stays in memory throughout; returning
++// false aborts the generation.
++typedef bool (*sd_hires_stage_input_cb_t)(const sd_image_t* first_stage_image,
++                                          sd_hires_stage_input_t* input,
++                                          void* user_data);
++
+ typedef struct {
+     bool enabled;
+     enum sd_hires_upscaler_t upscaler;
+@@ -364,9 +396,20 @@ typedef struct {
      int target_height;
      int steps;
      float denoising_strength;
@@ -342,8 +600,14 @@ index bab62ba..c57b765 100644
 +    bool return_lowres_image;
      float* custom_sigmas;
      int custom_sigmas_count;
++
++    sd_hires_stage_input_t stage_input;
++    sd_hires_stage_input_cb_t stage_input_cb;
++    void* stage_input_cb_user_data;
  } sd_hires_params_t;
-@@ -378,6 +395,10 @@ typedef struct {
+ 
+ typedef struct {
+@@ -378,6 +421,10 @@ typedef struct {
      sd_image_t init_image;
      sd_image_t* ref_images;
      int ref_images_count;
@@ -814,7 +1078,7 @@ index 69bcaa1..5eeda8d 100644
                  tensor_storage.ne[0]  = tensor_storage.ne[1];
                  tensor_storage.ne[1]  = 1;
 diff --git a/src/stable-diffusion.cpp b/src/stable-diffusion.cpp
-index 7370f6a..7ad1701 100644
+index 7370f6a..51079b4 100644
 --- a/src/stable-diffusion.cpp
 +++ b/src/stable-diffusion.cpp
 @@ -2516,6 +2516,7 @@ public:
@@ -1036,17 +1300,20 @@ index 7370f6a..7ad1701 100644
          return params;
      }
  };
-@@ -3546,7 +3632,9 @@ void sd_hires_params_init(sd_hires_params_t* hires_params) {
+@@ -3546,7 +3632,12 @@ void sd_hires_params_init(sd_hires_params_t* hires_params) {
      hires_params->target_height       = 0;
      hires_params->steps               = 0;
      hires_params->denoising_strength  = 0.7f;
 +    hires_params->noise_multiplier    = 1.0f;
      hires_params->upscale_tile_size   = 128;
 +    hires_params->return_lowres_image = false;
++    hires_params->stage_input                = {nullptr, nullptr, nullptr, 0};
++    hires_params->stage_input_cb             = nullptr;
++    hires_params->stage_input_cb_user_data   = nullptr;
      hires_params->custom_sigmas       = nullptr;
      hires_params->custom_sigmas_count = 0;
  }
-@@ -3669,6 +3757,12 @@ void sd_sample_params_init(sd_sample_params_t* sample_params) {
+@@ -3669,6 +3760,12 @@ void sd_sample_params_init(sd_sample_params_t* sample_params) {
      sample_params->custom_sigmas               = nullptr;
      sample_params->custom_sigmas_count         = 0;
      sample_params->flow_shift                  = INFINITY;
@@ -1059,7 +1326,7 @@ index 7370f6a..7ad1701 100644
      sample_params->extra_sample_args           = nullptr;
  }
  
-@@ -3686,6 +3780,11 @@ char* sd_sample_params_to_str(const sd_sample_params_t* sample_params) {
+@@ -3686,6 +3783,11 @@ char* sd_sample_params_to_str(const sd_sample_params_t* sample_params) {
               "slg.layer_start: %.2f, "
               "slg.layer_end: %.2f, "
               "slg.scale: %.2f, "
@@ -1071,7 +1338,7 @@ index 7370f6a..7ad1701 100644
               "scheduler: %s, "
               "sample_method: %s, "
               "sample_steps: %d, "
-@@ -3702,6 +3801,11 @@ char* sd_sample_params_to_str(const sd_sample_params_t* sample_params) {
+@@ -3702,6 +3804,11 @@ char* sd_sample_params_to_str(const sd_sample_params_t* sample_params) {
               sample_params->guidance.slg.layer_start,
               sample_params->guidance.slg.layer_end,
               sample_params->guidance.slg.scale,
@@ -1083,7 +1350,7 @@ index 7370f6a..7ad1701 100644
               sd_scheduler_name(sample_params->scheduler),
               sd_sample_method_name(sample_params->sample_method),
               sample_params->sample_steps,
-@@ -3718,10 +3822,12 @@ void sd_img_gen_params_init(sd_img_gen_params_t* sd_img_gen_params) {
+@@ -3718,10 +3825,12 @@ void sd_img_gen_params_init(sd_img_gen_params_t* sd_img_gen_params) {
      sd_sample_params_init(&sd_img_gen_params->sample_params);
      sd_img_gen_params->clip_skip           = -1;
      sd_img_gen_params->ref_images_count    = 0;
@@ -1097,7 +1364,7 @@ index 7370f6a..7ad1701 100644
      sd_img_gen_params->seed                = -1;
      sd_img_gen_params->batch_count         = 1;
      sd_img_gen_params->control_strength    = 0.9f;
-@@ -4401,6 +4507,7 @@ struct ImageGenerationLatents {
+@@ -4401,6 +4510,7 @@ struct ImageGenerationLatents {
      sd::Tensor<float> video_positions;
      sd::Tensor<float> control_image;
      std::vector<sd::Tensor<float>> ref_images;
@@ -1105,7 +1372,7 @@ index 7370f6a..7ad1701 100644
      std::vector<sd::Tensor<float>> ref_latents;
      std::vector<sd::Tensor<float>> reference_audio_latents;
      std::vector<MiniMaxH3ReferenceBlock> minimax_reference_blocks;
-@@ -5061,6 +5168,14 @@ static std::optional<ImageGenerationLatents> prepare_image_generation_latents(sd
+@@ -5061,6 +5171,14 @@ static std::optional<ImageGenerationLatents> prepare_image_generation_latents(sd
                                                            image_channels));
      }
  
@@ -1120,7 +1387,7 @@ index 7370f6a..7ad1701 100644
      if (ref_images.empty() && sd_version_is_unet_edit(sd_ctx->sd->version)) {
          LOG_WARN("This model needs at least one reference image; using an empty reference");
          ref_images.push_back(sd::zeros<float>({request->width, request->height, image_channels, 1}));
-@@ -5072,9 +5187,15 @@ static std::optional<ImageGenerationLatents> prepare_image_generation_latents(sd
+@@ -5072,9 +5190,15 @@ static std::optional<ImageGenerationLatents> prepare_image_generation_latents(sd
          LOG_INFO("EDIT mode");
      }
  
@@ -1137,7 +1404,7 @@ index 7370f6a..7ad1701 100644
              continue;
          }
          sd::Tensor<float> ref_latent;
-@@ -5096,6 +5217,21 @@ static std::optional<ImageGenerationLatents> prepare_image_generation_latents(sd
+@@ -5096,6 +5220,21 @@ static std::optional<ImageGenerationLatents> prepare_image_generation_latents(sd
              vae_height = round(vae_height / factor) * factor;
              vae_width  = round(vae_width / factor) * factor;
  
@@ -1159,7 +1426,7 @@ index 7370f6a..7ad1701 100644
              auto resized_ref_img = sd::ops::interpolate(ref_images[i],
                                                          {static_cast<int>(vae_width),
                                                           static_cast<int>(vae_height),
-@@ -5198,6 +5334,7 @@ static std::optional<ImageGenerationLatents> prepare_image_generation_latents(sd
+@@ -5198,6 +5337,7 @@ static std::optional<ImageGenerationLatents> prepare_image_generation_latents(sd
      latents.img_uncond_concat_latent = std::move(img_uncond_concat_latent);
      latents.control_image            = std::move(control_image_tensor);
      latents.ref_images               = std::move(ref_images);
@@ -1167,7 +1434,7 @@ index 7370f6a..7ad1701 100644
      latents.ref_latents              = std::move(ref_latents);
  
      if (sd_version_is_inpaint(sd_ctx->sd->version)) {
-@@ -5227,6 +5364,7 @@ static std::optional<ImageGenerationEmbeds> prepare_image_generation_embeds(sd_c
+@@ -5227,6 +5367,7 @@ static std::optional<ImageGenerationEmbeds> prepare_image_generation_embeds(sd_c
      if (ref_image_params.pass_to_vlm) {
          condition_params.ref_images = &latents->ref_images;
      }
@@ -1175,7 +1442,68 @@ index 7370f6a..7ad1701 100644
  
      condition_params.ref_image_params = ref_image_params;
  
-@@ -5698,6 +5836,7 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
+@@ -5309,6 +5450,60 @@ static std::optional<ImageGenerationEmbeds> prepare_image_generation_embeds(sd_c
+     return embeds;
+ }
+ 
++// Re-runs the conditioning for the hires pass when the caller gave it text or
++// vision of its own. The latents are only read, never replaced, so the refinement
++// still continues from the first stage's latent instead of a re-encoded image.
++static bool re_encode_hires_conditioning(sd_ctx_t* sd_ctx,
++                                         const sd_img_gen_params_t* sd_img_gen_params,
++                                         GenerationRequest* request,
++                                         SamplePlan* plan,
++                                         ImageGenerationLatents* latents,
++                                         const RefImageParams& ref_image_params,
++                                         const sd_hires_stage_input_t& stage_input,
++                                         ImageGenerationEmbeds* embeds) {
++    const bool has_prompt = stage_input.prompt != nullptr && strlen(stage_input.prompt) > 0;
++    const bool has_negative_prompt =
++        stage_input.negative_prompt != nullptr && strlen(stage_input.negative_prompt) > 0;
++    const bool has_vlm_images = stage_input.vlm_images_count > 0 && stage_input.vlm_images != nullptr;
++    if (!has_prompt && !has_negative_prompt && !has_vlm_images) {
++        return true;
++    }
++
++    const std::string first_stage_prompt          = request->prompt;
++    const std::string first_stage_negative_prompt = request->negative_prompt;
++    std::vector<sd::Tensor<float>> first_stage_vlm_images = std::move(latents->vlm_images);
++
++    if (has_prompt) {
++        request->prompt = stage_input.prompt;
++    }
++    if (has_negative_prompt) {
++        request->negative_prompt = stage_input.negative_prompt;
++    }
++    latents->vlm_images.clear();
++    if (has_vlm_images) {
++        const int image_channels = sd_ctx->sd->get_image_channels();
++        for (int i = 0; i < stage_input.vlm_images_count; i++) {
++            latents->vlm_images.push_back(
++                ensure_image_tensor_channels(sd_image_to_tensor(stage_input.vlm_images[i]), image_channels));
++        }
++    }
++
++    LOG_INFO("hires fix: re-encoding conditioning for the hires pass");
++    auto hires_embeds = prepare_image_generation_embeds(sd_ctx, sd_img_gen_params, request,
++                                                        plan, latents, ref_image_params);
++
++    request->prompt          = first_stage_prompt;
++    request->negative_prompt = first_stage_negative_prompt;
++    latents->vlm_images      = std::move(first_stage_vlm_images);
++
++    if (!hires_embeds.has_value()) {
++        LOG_ERROR("failed to encode the hires conditioning");
++        return false;
++    }
++    *embeds = std::move(hires_embeds.value());
++    return true;
++}
++
+ static sd_image_t* decode_image_outputs(sd_ctx_t* sd_ctx,
+                                         const GenerationRequest& request,
+                                         const std::vector<sd::Tensor<float>>& final_latents,
+@@ -5698,6 +5893,7 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
                                                     latents.control_image,
                                                     request.control_strength,
                                                     request.guidance,
@@ -1183,7 +1511,7 @@ index 7370f6a..7ad1701 100644
                                                     plan.eta,
                                                     request.shifted_timestep,
                                                     plan.sample_method,
-@@ -5734,11 +5873,37 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
+@@ -5734,11 +5930,56 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
          return false;
      }
  
@@ -1211,17 +1539,36 @@ index 7370f6a..7ad1701 100644
              LOG_ERROR("cancelling generation before hires fix");
              return false;
          }
-+        if (request.hires.return_lowres_image) {
++        const bool needs_first_stage_image =
++            request.hires.return_lowres_image || request.hires.stage_input_cb != nullptr;
++        if (needs_first_stage_image) {
 +            lowres.images = decode_image_outputs(sd_ctx, request, final_latents, &lowres.count);
 +            if (lowres.images == nullptr) {
 +                LOG_ERROR("failed to decode the pre-upscale image");
 +                return false;
 +            }
 +        }
++
++        // The caller inspects the decoded first stage and says what the hires pass
++        // should be conditioned on. final_latents is untouched across this call, so
++        // the refinement continues from the latent rather than from a re-encode.
++        sd_hires_stage_input_t stage_input = request.hires.stage_input;
++        if (request.hires.stage_input_cb != nullptr) {
++            if (!request.hires.stage_input_cb(&lowres.images[0], &stage_input,
++                                              request.hires.stage_input_cb_user_data)) {
++                LOG_ERROR("hires stage input was refused by the caller");
++                return false;
++            }
++        }
++
++        if (!re_encode_hires_conditioning(sd_ctx, sd_img_gen_params, &request, &plan,
++                                          &latents, ref_image_params, stage_input, &embeds)) {
++            return false;
++        }
          LOG_INFO("hires fix: upscaling to %dx%d", request.hires.target_width, request.hires.target_height);
  
          std::unique_ptr<UpscalerGGML> hires_upscaler;
-@@ -5819,6 +5984,7 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
+@@ -5819,6 +6060,7 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
                                                              latents.control_image,
                                                              request.control_strength,
                                                              request.guidance,
@@ -1229,7 +1576,7 @@ index 7370f6a..7ad1701 100644
                                                              plan.eta,
                                                              request.shifted_timestep,
                                                              plan.sample_method,
-@@ -5832,7 +5998,9 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
+@@ -5832,7 +6074,9 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
                                                              1.f,
                                                              0,
                                                              static_cast<float>(request.fps),
@@ -1240,7 +1587,7 @@ index 7370f6a..7ad1701 100644
              int64_t hires_sample_end   = ggml_time_ms();
              if (!x_0.empty()) {
                  LOG_INFO("hires sampling %d/%d completed, taking %.2fs",
-@@ -5861,6 +6029,24 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
+@@ -5861,6 +6105,24 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
          return false;
      }
  
@@ -1265,7 +1612,7 @@ index 7370f6a..7ad1701 100644
      sd_ctx->sd->lora_stat();
  
      int64_t t1 = ggml_time_ms();
-@@ -6952,6 +7138,7 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
+@@ -6952,6 +7214,7 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
                                                             sd::Tensor<float>(),
                                                             0.f,
                                                             request.high_noise_guidance,
@@ -1273,7 +1620,7 @@ index 7370f6a..7ad1701 100644
                                                             plan.high_noise_eta,
                                                             request.shifted_timestep,
                                                             plan.high_noise_sample_method,
-@@ -6994,6 +7181,7 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
+@@ -6994,6 +7257,7 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
                                                          sd::Tensor<float>(),
                                                          0.f,
                                                          sd_vid_gen_params->sample_params.guidance,
@@ -1281,7 +1628,7 @@ index 7370f6a..7ad1701 100644
                                                          plan.eta,
                                                          sd_vid_gen_params->sample_params.shifted_timestep,
                                                          plan.sample_method,
-@@ -7132,6 +7320,7 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
+@@ -7132,6 +7396,7 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
                                              sd::Tensor<float>(),
                                              0.f,
                                              sd_vid_gen_params->sample_params.guidance,
