@@ -72,6 +72,8 @@ button.danger{background:#49252a;border-color:#813942}
 .krea2edit-reference-boost input{width:74px;margin:0}
 .krea2edit-reference-tag{display:flex;align-items:center;gap:4px;color:var(--muted);font-size:11px}
 .krea2edit-reference-tag input{width:auto;margin:0}
+.image-contribution-weight{display:inline-flex;align-items:center;gap:4px}
+.image-contribution-weight input[type=number]{width:60px;margin:0}
 .krea2edit-add-reference{width:auto;margin-top:8px;padding:6px 10px;font-size:12px}
 #krea2EditPanel.collapsed .krea2edit-settings{display:none}
 .result-tabs{display:flex;gap:5px;padding-top:11px;border-bottom:1px solid var(--line)}
@@ -330,14 +332,15 @@ button.danger{background:#49252a;border-color:#813942}
         <span id="selectedSourceResolution"></span>
         <button type="button" onclick="chooseSourceImage()">Load source image</button>
         <label class="source-choice-radio" title="Encode the source image and start the first stage from it instead of from noise. The denoise strength and noise multiplier below apply to it. Krea2 Edit needs a pure-noise target, so this is ignored while edit mode is on."><input id="img2img_source_as_starting_latent" type="checkbox"> Use as starting latent</label>
-        <span class="tag-routing" title="Let the vision model read the source image for the chosen stage. Krea2 never shows it the init image on its own, and this costs nothing in the diffusion model's attention sequence."><label><input id="img2img_source_vision_to_stage_one" type="checkbox"> Vision tokens to stage 1</label></span>
-        <span class="tag-routing" title="Read WD14 danbooru tags from the source image and add them to the chosen stage's prompt.">WD14 tags to: <label><input id="img2img_source_tags_to_stage_one" type="checkbox"> stage 1</label><label><input id="img2img_source_tags_to_hires" type="checkbox"> hires</label></span>
+        <span class="tag-routing" title="Let the vision model read the source image for the chosen stage. Krea2 never shows it the init image on its own, and this costs nothing in the diffusion model's attention sequence."><label><input id="img2img_source_vision_to_stage_one" type="checkbox"> Vision tokens to stage 1</label><label class="image-contribution-weight" title="How hard the vision model's reading of this image pulls, for both stages. Exactly 1 leaves the runtime on its unweighted path.">weight<input id="img2img_source_vlm_image_token_weight" type="number" value="1" step="0.05" min="0" autocomplete="off"></label></span>
+        <span class="tag-routing" title="Read WD14 danbooru tags from the source image and add them to the chosen stage's prompt.">WD14 tags to: <label><input id="img2img_source_tags_to_stage_one" type="checkbox"> stage 1</label><label><input id="img2img_source_tags_to_hires" type="checkbox"> hires</label><label class="image-contribution-weight" title="How hard this image's tags pull against the rest of the prompt, for both stages. Exactly 1 appends them as plain text.">weight<input id="img2img_source_tag_prompt_weight" type="number" value="1" step="0.05" min="0" autocomplete="off"></label></span>
         <input id="sourceImageFile" type="file" accept="image/png,image/jpeg,.png,.jpg,.jpeg" hidden>
       </div>
     </div>
     <div class="fields two img2img-settings">
       <div><label for="img2img_denoise">Img2img denoise strength</label><div class="combo" data-field="img2img_denoise"></div></div>
       <div><label for="img2img_noise_multiplier">Img2img noise multiplier</label><div class="combo" data-field="img2img_noise_multiplier"></div></div>
+      <div><label for="img2img_source_vision_grounding_size" title="Longest side the source image is resized to before the vision model reads it. Its vision tokens join the prompt's own in the sequence the diffusion blocks attend over, so a larger size costs VRAM and time in every step. Auto leaves the runtime's own sizing, which budgets by area instead and so varies with the source image.">Source vision size</label><div class="combo" data-field="img2img_source_vision_grounding_size"></div></div>
     </div>
   </div>
   <div class="result-tabs" role="tablist" aria-label="Queue and output views">
@@ -391,10 +394,12 @@ const COMBO_FIELDS = {
   img2img_noise_multiplier: {value:'1', step:0.05, options:['0','0.25','0.5','0.75','1','1.25','1.5','2']},
   grounding_px:    {value:'768', step:64,   options:['384','512','640','768']},
   fit_mode:        {value:'fit', options:['fit','crop']},
+  img2img_source_vision_grounding_size: {value:'1024', options:['auto','384','512','768','1024','1215','1536','2048']},
 };
 const NUMERIC_FIELDS = ['seed','steps','cfg','flow_shift','pag_scale','pag_start','pag_end','hires_steps','hires_denoise','vae_tile_size','img2img_denoise','img2img_noise_multiplier','grounding_px','beta_schedule_alpha','beta_schedule_beta','hires_noise_multiplier'];
 const TEXT_FIELDS = ['sampler','scheduler','hires_upscaler','extra_sample_args','pag_layers','fit_mode',
-  'hires_prompt','hires_prompt_mode','hires_negative_prompt','hires_negative_prompt_mode','stage_one_wd14_tags','hires_vision_source'];
+  'hires_prompt','hires_prompt_mode','hires_negative_prompt','hires_negative_prompt_mode','stage_one_wd14_tags','hires_vision_source',
+  'img2img_source_vision_grounding_size'];
 
 let openComboList = null;
 
@@ -565,6 +570,8 @@ setSourceImage('');
 
 // The value the identity-edit workflow ships with; 1 is the weaker legacy behaviour.
 const RECOMMENDED_REFERENCE_FIDELITY = 4;
+const NEUTRAL_TAG_PROMPT_WEIGHT = 1;
+const NEUTRAL_VLM_IMAGE_TOKEN_WEIGHT = 1;
 let krea2EditReferencePanelBeingLoaded = null;
 
 function krea2EditReferencePanels(){
@@ -579,7 +586,8 @@ function renumberKrea2EditReferencePanels(){
 }
 
 function addKrea2EditReferencePanel(filename = '', referenceFidelity = RECOMMENDED_REFERENCE_FIDELITY,
-                                    tagsToStageOne = false, tagsToHires = false){
+                                    tagsToStageOne = false, tagsToHires = false,
+                                    tagPromptWeight = NEUTRAL_TAG_PROMPT_WEIGHT){
   const panel = document.createElement('div');
   panel.className = 'krea2edit-reference';
   panel.dataset.filename = filename;
@@ -598,7 +606,10 @@ function addKrea2EditReferencePanel(filename = '', referenceFidelity = RECOMMEND
           `<input type="number" class="krea2edit-reference-boost-input" value="${referenceFidelity}" step="0.5" min="0" autocomplete="off" oninput="refreshReferenceFidelityVramNotices()">` +
           `<span class="reference-fidelity-vram-notice" hidden>(extra VRAM)</span>` +
         `</label>` +
-        `<span class="krea2edit-reference-tag tag-routing" title="Read WD14 danbooru tags from this reference and add them to the chosen stage's prompt.">tags to: <label><input type="checkbox" class="krea2edit-reference-tags-stage-one-input"> s1</label><label><input type="checkbox" class="krea2edit-reference-tags-hires-input"> hi</label></span>` +
+        `<span class="krea2edit-reference-tag tag-routing" title="Read WD14 danbooru tags from this reference and add them to the chosen stage's prompt.">tags to: <label><input type="checkbox" class="krea2edit-reference-tags-stage-one-input"> s1</label><label><input type="checkbox" class="krea2edit-reference-tags-hires-input"> hi</label>` +
+          `<label class="image-contribution-weight" title="How hard this reference's tags pull against the rest of the prompt, for both stages. Exactly 1 appends them as plain text.">weight` +
+            `<input type="number" class="krea2edit-reference-tag-weight-input" value="${tagPromptWeight}" step="0.05" min="0" autocomplete="off">` +
+          `</label></span>` +
         `<button type="button" class="krea2edit-reference-remove">Remove</button>` +
       `</div>` +
     `</div>`;
@@ -679,6 +690,7 @@ function collectKrea2EditReferences(){
     .map(panel => ({
       filename: panel.dataset.filename || '',
       ref_boost: Number(panel.querySelector('.krea2edit-reference-boost-input').value),
+      tag_prompt_weight: Number(panel.querySelector('.krea2edit-reference-tag-weight-input').value),
       tags_to_stage_one: panel.querySelector('.krea2edit-reference-tags-stage-one-input').checked,
       tags_to_hires: panel.querySelector('.krea2edit-reference-tags-hires-input').checked,
     }))
@@ -689,7 +701,8 @@ function applyKrea2EditReferences(references){
   $('krea2EditReferenceList').innerHTML = '';
   (references || []).forEach(reference =>
     addKrea2EditReferencePanel(reference.filename, reference.ref_boost ?? RECOMMENDED_REFERENCE_FIDELITY,
-                               reference.tags_to_stage_one, reference.tags_to_hires));
+                               reference.tags_to_stage_one, reference.tags_to_hires,
+                               reference.tag_prompt_weight ?? NEUTRAL_TAG_PROMPT_WEIGHT));
   if (!krea2EditReferencePanels().length) addKrea2EditReferencePanel();
 }
 
@@ -825,6 +838,8 @@ function collectParams(){
     img2img_source_vision_to_stage_one: $('img2img_source_vision_to_stage_one').checked,
     img2img_source_tags_to_stage_one: $('img2img_source_tags_to_stage_one').checked,
     img2img_source_tags_to_hires: $('img2img_source_tags_to_hires').checked,
+    img2img_source_tag_prompt_weight: Number($('img2img_source_tag_prompt_weight').value),
+    img2img_source_vlm_image_token_weight: Number($('img2img_source_vlm_image_token_weight').value),
     krea2_edit_enabled: $('krea2_edit_enabled').checked,
     krea2_edit_references: collectKrea2EditReferences(),
     extra_loras: collectSelectedLoras(),
@@ -857,6 +872,11 @@ function escapeHtml(text){
   return String(text || '').replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
 }
 
+function weightWorthReporting(weight){
+  // A neutral or absent weight changed nothing, so it earns no row of its own.
+  return (weight === undefined || weight === null || Number(weight) === 1) ? '' : weight;
+}
+
 function formatJobDetails(params){
   const p = params || {};
   const generationType = p.generation_type || (p.source_image ? 'img2img' : 'txt2img');
@@ -887,6 +907,13 @@ function formatJobDetails(params){
     ['Img2img noise multiplier', generationType === 'img2img' ? (p.img2img_noise_multiplier ?? '') : ''],
     ['Img2img vision on source',
      p.img2img_source_vision_to_stage_one ? 'stage 1' : ''],
+    ['Img2img vision size',
+     p.img2img_source_vision_to_stage_one
+       ? (p.img2img_source_vision_grounding_size || 'auto') : ''],
+    ['Img2img vision weight',
+     weightWorthReporting(p.img2img_source_vlm_image_token_weight)],
+    ['Img2img source tag weight',
+     weightWorthReporting(p.img2img_source_tag_prompt_weight)],
     ['Hires vision input', p.hires ? (p.hires_vision_source || '') : ''],
     ['Hires pass', p.hires ? 'On' : 'Off'],
     ['Hires resolution', p.hires ? `${p.hires_width || ''}×${p.hires_height || ''}` : ''],
@@ -986,6 +1013,10 @@ function loadParamsIntoForm(p){
   });
   $('hires_reference_encode_size').value = p.hires_reference_encode_size > 0
     ? p.hires_reference_encode_size : 'auto';
+  // Params saved before this control existed were rendered with the runtime's own
+  // area sizing, so they reload as auto rather than taking the current default.
+  $('img2img_source_vision_grounding_size').value =
+    p.img2img_source_vision_grounding_size || 'auto';
   $('hires').checked = !!p.hires;
   $('save_lowres').checked = !!p.save_lowres;
   $('pag_enabled').checked = !!p.pag_enabled;
@@ -1004,6 +1035,10 @@ function loadParamsIntoForm(p){
   $('img2img_source_vision_to_stage_one').checked = !!p.img2img_source_vision_to_stage_one;
   $('img2img_source_tags_to_stage_one').checked = !!p.img2img_source_tags_to_stage_one;
   $('img2img_source_tags_to_hires').checked = !!p.img2img_source_tags_to_hires;
+  $('img2img_source_tag_prompt_weight').value =
+    p.img2img_source_tag_prompt_weight ?? NEUTRAL_TAG_PROMPT_WEIGHT;
+  $('img2img_source_vlm_image_token_weight').value =
+    p.img2img_source_vlm_image_token_weight ?? NEUTRAL_VLM_IMAGE_TOKEN_WEIGHT;
   refreshNoticesThatDependOnStageSettings();
   $('krea2_edit_enabled').checked = !!p.krea2_edit_enabled;
   applyKrea2EditReferences(p.krea2_edit_references);

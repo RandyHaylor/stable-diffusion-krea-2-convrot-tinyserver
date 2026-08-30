@@ -33,6 +33,7 @@ from krea2_edit_request import (
     krea2_edit_native_args_fields,
     krea2_edit_payload_fields,
     krea2_edit_references,
+    positive_weight_or_neutral,
 )
 from prompt_composition import (
     compose_hires_prompt,
@@ -40,10 +41,12 @@ from prompt_composition import (
     describe_missing_prompt,
     DEFAULT_HIRES_VISION_SOURCE,
     DEFAULT_STAGE_ONE_TAG_MODE,
+    NEUTRAL_TAG_PROMPT_WEIGHT,
     apply_stage_one_tags,
     hires_stage_uses_krea2_edit_references,
     hires_vision_source_needs_the_first_stage_image,
     stage_one_tags_need_the_first_stage_image,
+    wrap_tag_group_in_attention_weight,
 )
 
 
@@ -138,20 +141,29 @@ def without_non_finite_floats(value):
     return value
 
 
-def images_tagged_for_stage(p: dict, stage: str) -> list[str]:
-    """Output filenames routed to one stage's prompt, in the order they appear.
+def tagged_images_with_prompt_weights_for_stage(p: dict, stage: str) -> list[tuple[str, float]]:
+    """Output filenames routed to one stage's prompt, each with its tag weight.
 
     Each image says which stages receive its tags, so references and the img2img
     source can both contribute, and either can feed one stage without the other.
+    The weight is per image and not per stage, so an image feeding both stages
+    pulls equally hard in each.
     """
     routing_key = f"tags_to_{stage}"
-    image_names = [str(reference.get("filename", ""))
-                   for reference in krea2_edit_references(p)
-                   if reference.get(routing_key)]
+    tagged_images = [(str(reference.get("filename", "")), reference["tag_prompt_weight"])
+                     for reference in krea2_edit_references(p)
+                     if reference.get(routing_key)]
     source_image = str(p.get("source_image", "")).strip()
     if source_image and p.get(f"img2img_source_{routing_key}"):
-        image_names.append(source_image)
-    return image_names
+        tagged_images.append((source_image, source_tag_prompt_weight(p)))
+    return tagged_images
+
+
+def source_tag_prompt_weight(p: dict) -> float:
+    """How hard the img2img source's tags pull, 1.0 for untouched."""
+    return positive_weight_or_neutral(
+        p.get("img2img_source_tag_prompt_weight", NEUTRAL_TAG_PROMPT_WEIGHT),
+        NEUTRAL_TAG_PROMPT_WEIGHT)
 
 
 def images_giving_vision_to_stage(p: dict, stage: str) -> list[str]:
@@ -173,34 +185,35 @@ def hires_vision_source(p: dict) -> str:
     return str(p.get("hires_vision_source", DEFAULT_HIRES_VISION_SOURCE))
 
 
-def tag_groups_for_images(image_names: list[str],
+def tag_groups_for_images(tagged_images: list[tuple[str, float]],
                           tag_group_cache: dict[str, str] | None = None) -> list[str]:
     """One comma-separated tag string per image, skipping any that yield nothing.
 
     A missing tagger model is reported once and treated as "no tags" rather than
     failing the generation, since the user asked for an image, not for tagging.
 
-    The cache lets an image routed to both stages be read once per job rather
-    than once per stage.
+    The cache holds each image's unweighted tags, so an image routed to both
+    stages is read once per job rather than once per stage; the weight is applied
+    to the cached text afterwards.
     """
     tag_groups = []
-    for image_name in image_names:
+    for image_name, tag_prompt_weight in tagged_images:
         if tag_group_cache is not None and image_name in tag_group_cache:
-            cached_tag_group = tag_group_cache[image_name]
-            if cached_tag_group:
-                tag_groups.append(cached_tag_group)
-            continue
-        try:
-            tags = wd14_tagging.tag_image_file(OUTPUT_DIR / Path(image_name).name)
-        except wd14_tagging.TaggerUnavailable as exc:
-            print(f"[web] WD14 tagging skipped: {exc}", flush=True)
-            return []
-        tag_group = wd14_tagging.format_danbooru_tags_for_prompt(tags)
-        if tag_group_cache is not None:
-            tag_group_cache[image_name] = tag_group
-        if tag_group:
-            tag_groups.append(tag_group)
-            print(f"[web] WD14 tagged {image_name}: {tag_group}", flush=True)
+            tag_group = tag_group_cache[image_name]
+        else:
+            try:
+                tags = wd14_tagging.tag_image_file(OUTPUT_DIR / Path(image_name).name)
+            except wd14_tagging.TaggerUnavailable as exc:
+                print(f"[web] WD14 tagging skipped: {exc}", flush=True)
+                return []
+            tag_group = wd14_tagging.format_danbooru_tags_for_prompt(tags)
+            if tag_group_cache is not None:
+                tag_group_cache[image_name] = tag_group
+            if tag_group:
+                print(f"[web] WD14 tagged {image_name}: {tag_group}", flush=True)
+        weighted_tag_group = wrap_tag_group_in_attention_weight(tag_group, tag_prompt_weight)
+        if weighted_tag_group:
+            tag_groups.append(weighted_tag_group)
     return tag_groups
 
 
@@ -468,11 +481,11 @@ class QueueManager:
         stage_one_tag_mode = str(p.get("stage_one_wd14_tags", DEFAULT_STAGE_ONE_TAG_MODE))
         # One cache per job, so an image routed to both stages is read once.
         tag_group_cache: dict[str, str] = {}
-        main_tag_groups = tag_groups_for_images(images_tagged_for_stage(p, "stage_one"),
-                                                tag_group_cache)
-        hires_image_tag_groups = (tag_groups_for_images(images_tagged_for_stage(p, "hires"),
-                                                        tag_group_cache)
-                                  if hires_enabled else [])
+        main_tag_groups = tag_groups_for_images(
+            tagged_images_with_prompt_weights_for_stage(p, "stage_one"), tag_group_cache)
+        hires_image_tag_groups = (tag_groups_for_images(
+            tagged_images_with_prompt_weights_for_stage(p, "hires"), tag_group_cache)
+            if hires_enabled else [])
         stage_one_vision_images = images_giving_vision_to_stage(p, "stage_one")
         hires_vision_images = (images_giving_vision_to_stage(p, "hires")
                                if hires_enabled else [])
@@ -501,8 +514,10 @@ class QueueManager:
         def supply_hires_input(first_stage_image_b64: str) -> dict:
             stage_one_name = f"krea-web-lowres-{job['id']}-{datetime.now():%Y%m%d-%H%M%S}-0.png"
             (OUTPUT_DIR / stage_one_name).write_bytes(base64.b64decode(first_stage_image_b64))
-            stage_one_tag_groups = (tag_groups_for_images([stage_one_name])
-                                    if wants_stage_one_tags else [])
+            # The generated image has no panel of its own, so its tags are unweighted.
+            stage_one_tag_groups = (
+                tag_groups_for_images([(stage_one_name, NEUTRAL_TAG_PROMPT_WEIGHT)])
+                if wants_stage_one_tags else [])
             hires_prompt = apply_stage_one_tags(
                 compose_hires_prompt(p["prompt"], str(p.get("hires_prompt", "")),
                                      str(p.get("hires_prompt_mode", "append")),
@@ -576,7 +591,8 @@ class QueueManager:
             "vae_tiling_params": {"enabled": True, "tile_size_x": int(p["vae_tile_size"]),
                                   "tile_size_y": int(p["vae_tile_size"]), "target_overlap": 0.5},
             **krea2_edit_native_args_fields(
-                p, hires_reference_encode_size(p) if hires else 0),
+                p, hires_reference_encode_size(p) if hires else 0,
+                source_gives_vision=bool(vlm_image_names)),
         }
         if hires:
             native["hires"] = {
@@ -864,7 +880,7 @@ def build_app(user: str, password: str, backend: str) -> FastAPI:
         params = body.get("params", {})
         missing_prompt_reason = describe_missing_prompt(
             str(params.get("prompt", "")),
-            bool(images_tagged_for_stage(params, "stage_one")),
+            bool(tagged_images_with_prompt_weights_for_stage(params, "stage_one")),
             bool(params.get("hires")),
             str(params.get("hires_prompt", "")),
             str(params.get("hires_prompt_mode", "append")))

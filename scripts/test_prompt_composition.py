@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from prompt_composition import (  # noqa: E402
     HIRES_PROMPT_MODES,
     HIRES_VISION_SOURCES,
+    NEUTRAL_TAG_PROMPT_WEIGHT,
     STAGE_ONE_TAG_MODES,
     apply_stage_one_tags,
     hires_stage_uses_krea2_edit_references,
@@ -17,6 +18,7 @@ from prompt_composition import (  # noqa: E402
     compose_prompt_with_tag_groups,
     describe_missing_prompt,
     stage_one_tags_need_the_first_stage_image,
+    wrap_tag_group_in_attention_weight,
 )
 
 failures: list[str] = []
@@ -158,6 +160,29 @@ def main() -> int:
           and stage_one_tags_need_the_first_stage_image("prepend")
           and not stage_one_tags_need_the_first_stage_image("not_used"),
           "this decides whether the low-res pass has to be forced")
+
+    check("a neutral weight leaves the tag group exactly as it was",
+          wrap_tag_group_in_attention_weight("1girl, smile", NEUTRAL_TAG_PROMPT_WEIGHT)
+          == "1girl, smile",
+          "the neutral case must add no syntax the runtime would have to parse")
+    check("a weight above neutral wraps the whole group in attention syntax",
+          wrap_tag_group_in_attention_weight("1girl, smile", 1.2) == "(1girl, smile:1.2)")
+    check("a weight below neutral wraps the same way",
+          wrap_tag_group_in_attention_weight("1girl, smile", 0.5) == "(1girl, smile:0.5)")
+    check("an empty group stays empty rather than becoming weighted nothing",
+          wrap_tag_group_in_attention_weight("", 1.2) == "")
+    check("a whitespace-only group is treated as empty",
+          wrap_tag_group_in_attention_weight("   ", 1.2) == "")
+    check("escaped danbooru parens survive being wrapped",
+          wrap_tag_group_in_attention_weight(r"hatsune miku \(vocaloid\), smile", 1.3)
+          == r"(hatsune miku \(vocaloid\), smile:1.3)",
+          "the runtime reads unescaped parens as nested attention groups")
+    check("the weight is formatted without trailing zero noise",
+          wrap_tag_group_in_attention_weight("1girl", 1.50) == "(1girl:1.5)")
+    check("a weighted group still composes into a prompt as one segment",
+          compose_prompt_with_tag_groups(
+              "a photo", [wrap_tag_group_in_attention_weight("1girl, smile", 1.2)])
+          == "a photo, (1girl, smile:1.2)")
 
     print()
     if failures:

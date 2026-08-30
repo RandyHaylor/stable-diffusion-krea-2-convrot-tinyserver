@@ -12,7 +12,14 @@ defaults to `krea2_ostris_edit`, which differs and degrades output silently.
 
 References are ordered, and the order is meaningful: the LoRA was trained with
 the scene first and the subject second. Each reference carries its own
-ref_boost, which multiplies how hard the target attends to that reference.
+ref_boost, which multiplies how hard the target attends to that reference, and
+its own tag weight, which decides how hard any WD14 tags read from it pull
+against the rest of the prompt.
+
+A weight on the vision tokens themselves is built here too, since
+`ref_image_args` is the only channel that reaches them. It applies to the
+img2img source, which feeds the vision tower whether or not edit mode is on, so
+these args are sometimes assembled for a request that has no references at all.
 
 The LoRA itself is not handled here: the user selects it like any other LoRA.
 """
@@ -20,11 +27,69 @@ from __future__ import annotations
 
 from typing import Callable
 
+from prompt_composition import NEUTRAL_TAG_PROMPT_WEIGHT
+
 REF_IMAGE_PRESET_NAME = "krea2_edit"
 DEFAULT_GROUNDING_PIXELS = 768
 NEUTRAL_REFERENCE_FIDELITY = 1.0
 REFERENCE_FIT_MODES = ("fit", "crop")
 DEFAULT_REFERENCE_FIT_MODE = "fit"
+
+# How strongly the vision tower's reading of an image pulls on the result. Unlike
+# ref_boost, which biases the DiT's attention to reference latents, this scales the
+# hidden states of the image's own vision tokens.
+NEUTRAL_VLM_IMAGE_TOKEN_WEIGHT = 1.0
+
+# Edge lengths the img2img source may be resized to before the vision tower reads
+# it. The token count a vision image contributes follows its resized grid, so an
+# explicit longest side is what makes that count predictable.
+#
+# 'auto' hands the sizing back to the runtime's own preset, which budgets by area
+# and leaves anything already inside its band untouched, so the token count then
+# tracks the source image's own dimensions. An explicit size is preferred by
+# default; the runtime snaps whatever is asked for to its patch grid, so these are
+# targets rather than exact output edges.
+SOURCE_VISION_GROUNDING_SIZES = ("auto", "384", "512", "768", "1024", "1215", "1536", "2048")
+DEFAULT_SOURCE_VISION_GROUNDING_SIZE = "1024"
+
+
+def positive_weight_or_neutral(value, neutral_weight: float) -> float:
+    """A user-supplied weight, with anything non-positive read as neutral.
+
+    Zero and negatives would suppress or invert the contribution rather than
+    weighting it, which is never what leaving a field alone should mean.
+    """
+    try:
+        weight = float(value)
+    except (TypeError, ValueError):
+        return neutral_weight
+    return weight if weight > 0 else neutral_weight
+
+
+def source_vlm_image_token_weight(params: dict) -> float:
+    """How hard the img2img source's vision tokens pull, 1.0 for untouched."""
+    return positive_weight_or_neutral(
+        params.get("img2img_source_vlm_image_token_weight", NEUTRAL_VLM_IMAGE_TOKEN_WEIGHT),
+        NEUTRAL_VLM_IMAGE_TOKEN_WEIGHT)
+
+
+def build_source_vision_grounding_args(params: dict, source_gives_vision: bool) -> list[str]:
+    """Args fixing the edge length the img2img source is read at, or none for auto.
+
+    A longest-side resize is used rather than an area budget so one setting always
+    means the same token count for a given aspect ratio. Those tokens join the
+    prompt's own in the sequence the diffusion blocks attend over, which is why the
+    size is worth controlling rather than inheriting.
+    """
+    if not source_gives_vision:
+        return []
+    requested_size = str(params.get("img2img_source_vision_grounding_size",
+                                    DEFAULT_SOURCE_VISION_GROUNDING_SIZE)).strip()
+    if requested_size not in SOURCE_VISION_GROUNDING_SIZES:
+        requested_size = DEFAULT_SOURCE_VISION_GROUNDING_SIZE
+    if requested_size == "auto":
+        return []
+    return ["vlm_resize_mode=longest_side", f"vlm_size={requested_size}"]
 
 
 def is_krea2_edit_enabled(params: dict) -> bool:
@@ -38,7 +103,9 @@ def krea2_edit_references(params: dict) -> list[dict]:
     Panels the user left empty are dropped rather than sent as blanks. A boost
     that is missing or non-positive becomes neutral, which keeps every remaining
     reference at the position the user arranged it in. Tag routing is per stage
-    and defaults to neither, so an untouched panel never costs a tagger run.
+    and defaults to neither, so an untouched panel never costs a tagger run. The
+    tag weight is per image rather than per stage, so both stages read this
+    reference's tags at the same strength.
     """
     if not params.get("krea2_edit_enabled"):
         return []
@@ -47,13 +114,17 @@ def krea2_edit_references(params: dict) -> list[dict]:
         filename = str(entry.get("filename", "")).strip()
         if not filename:
             continue
-        reference_fidelity = float(entry.get("ref_boost", NEUTRAL_REFERENCE_FIDELITY))
-        if reference_fidelity <= 0:
-            reference_fidelity = NEUTRAL_REFERENCE_FIDELITY
-        references.append({"filename": filename,
-                           "ref_boost": reference_fidelity,
-                           "tags_to_stage_one": bool(entry.get("tags_to_stage_one")),
-                           "tags_to_hires": bool(entry.get("tags_to_hires"))})
+        references.append({
+            "filename": filename,
+            "ref_boost": positive_weight_or_neutral(
+                entry.get("ref_boost", NEUTRAL_REFERENCE_FIDELITY),
+                NEUTRAL_REFERENCE_FIDELITY),
+            "tag_prompt_weight": positive_weight_or_neutral(
+                entry.get("tag_prompt_weight", NEUTRAL_TAG_PROMPT_WEIGHT),
+                NEUTRAL_TAG_PROMPT_WEIGHT),
+            "tags_to_stage_one": bool(entry.get("tags_to_stage_one")),
+            "tags_to_hires": bool(entry.get("tags_to_hires")),
+        })
     return references
 
 
@@ -73,7 +144,28 @@ def krea2_edit_reference_fit_mode(params: dict) -> str:
     return requested_fit_mode
 
 
-def build_krea2_edit_ref_image_args(params: dict, reference_encode_size: int = 0) -> str:
+def build_vlm_image_token_weight_args(params: dict,
+                                      reference_count: int,
+                                      source_gives_vision: bool) -> list[str]:
+    """One `vlm_image_token_weight` per image the vision tower reads, in its order.
+
+    The runtime assembles its vision images as reference images first and then the
+    images attached for the tower alone, so weighting the img2img source means
+    filling a neutral slot for each reference ahead of it. Nothing is emitted while
+    every weight is neutral, which keeps the runtime on its unweighted path.
+    """
+    if not source_gives_vision:
+        return []
+    source_weight = source_vlm_image_token_weight(params)
+    if source_weight == NEUTRAL_VLM_IMAGE_TOKEN_WEIGHT:
+        return []
+    weights = [NEUTRAL_VLM_IMAGE_TOKEN_WEIGHT] * reference_count + [source_weight]
+    return [f"vlm_image_token_weight={weight:g}" for weight in weights]
+
+
+def build_krea2_edit_ref_image_args(params: dict,
+                                    reference_encode_size: int = 0,
+                                    source_gives_vision: bool = False) -> str:
     """The reference-image args: preset, VLM grounding size, fit mode, fidelity.
 
     The default fit mode is omitted so the preset's own geometry stands.
@@ -101,6 +193,7 @@ def build_krea2_edit_ref_image_args(params: dict, reference_encode_size: int = 0
     references = krea2_edit_references(params)
     if any(reference["ref_boost"] != NEUTRAL_REFERENCE_FIDELITY for reference in references):
         arguments += [f"ref_boost={reference['ref_boost']:g}" for reference in references]
+    arguments += build_vlm_image_token_weight_args(params, len(references), source_gives_vision)
     return ",".join(arguments)
 
 
@@ -139,13 +232,23 @@ def krea2_edit_payload_fields(
     }
 
 
-def krea2_edit_native_args_fields(params: dict, reference_encode_size: int = 0) -> dict:
-    """Fields for the native sd_cpp_extra_args block; empty when edit mode is off.
+def krea2_edit_native_args_fields(params: dict,
+                                  reference_encode_size: int = 0,
+                                  source_gives_vision: bool = False) -> dict:
+    """Fields for the native sd_cpp_extra_args block, or none when nothing needs them.
 
     `ref_image_args` is a native generation parameter. The compatibility
     endpoints parse only their own named fields out of the request body, so it
     reaches the runtime through the embedded native args instead.
+
+    An img2img generation whose source feeds the vision tower has no edit
+    references and so no other reason to send these args, but a weight on that
+    source's vision tokens still has to travel somewhere. Such a request names no
+    preset, leaving whichever one the runtime would have chosen on its own.
     """
     if not is_krea2_edit_enabled(params):
-        return {}
-    return {"ref_image_args": build_krea2_edit_ref_image_args(params, reference_encode_size)}
+        arguments = (build_source_vision_grounding_args(params, source_gives_vision)
+                     + build_vlm_image_token_weight_args(params, 0, source_gives_vision))
+        return {"ref_image_args": ",".join(arguments)} if arguments else {}
+    return {"ref_image_args": build_krea2_edit_ref_image_args(
+        params, reference_encode_size, source_gives_vision)}

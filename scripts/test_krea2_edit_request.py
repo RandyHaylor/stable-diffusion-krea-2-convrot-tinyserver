@@ -11,6 +11,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from krea2_edit_request import (  # noqa: E402
+    DEFAULT_SOURCE_VISION_GROUNDING_SIZE,
+    NEUTRAL_VLM_IMAGE_TOKEN_WEIGHT,
+    SOURCE_VISION_GROUNDING_SIZES,
+    build_source_vision_grounding_args,
     build_vision_only_ref_image_args,
     build_krea2_edit_ref_image_args,
     is_krea2_edit_enabled,
@@ -18,6 +22,7 @@ from krea2_edit_request import (  # noqa: E402
     krea2_edit_payload_fields,
     krea2_edit_reference_fit_mode,
     krea2_edit_references,
+    source_vlm_image_token_weight,
 )
 
 failures: list[str] = []
@@ -70,9 +75,22 @@ def main() -> int:
           "a reference can feed tags to one stage without the other")
     check("a reference with no routing keys sends tags nowhere",
           krea2_edit_references(enabled_params(references=[{"filename": "scene.png"}]))[0]
-          == {"filename": "scene.png", "ref_boost": 1.0,
+          == {"filename": "scene.png", "ref_boost": 1.0, "tag_prompt_weight": 1.0,
               "tags_to_stage_one": False, "tags_to_hires": False},
           "ticking nothing must never cost a tagger run")
+
+    check("a missing per-reference tag weight defaults to neutral",
+          krea2_edit_references(enabled_params(references=[{"filename": "scene.png"}]))[0]
+          ["tag_prompt_weight"] == 1.0)
+    check("each reference carries its own tag weight",
+          [reference["tag_prompt_weight"] for reference in krea2_edit_references(
+              enabled_params(references=[{"filename": "scene.png", "tag_prompt_weight": 1.4},
+                                         {"filename": "person.png", "tag_prompt_weight": 0.6}]))]
+          == [1.4, 0.6])
+    check("a non-positive tag weight falls back to neutral",
+          krea2_edit_references(enabled_params(references=[
+              {"filename": "scene.png", "tag_prompt_weight": 0}]))[0]["tag_prompt_weight"] == 1.0,
+          "zero would silently erase the tags rather than weight them")
 
     check("references are empty when disabled",
           krea2_edit_references({}) == [])
@@ -221,6 +239,111 @@ def main() -> int:
     check("edit mode never sets denoising_strength; the target starts as pure noise",
           "denoising_strength" not in payload_fields,
           f"keys={sorted(payload_fields)}")
+
+    check("a missing source vision weight reads as neutral",
+          source_vlm_image_token_weight({}) == NEUTRAL_VLM_IMAGE_TOKEN_WEIGHT)
+    check("a non-positive source vision weight falls back to neutral",
+          source_vlm_image_token_weight({"img2img_source_vlm_image_token_weight": 0})
+          == NEUTRAL_VLM_IMAGE_TOKEN_WEIGHT,
+          "zero would mean the vision tokens contribute nothing at all")
+
+    weighted_vision = enabled_params(img2img_source_vlm_image_token_weight=0.5)
+    check("a neutral source vision weight adds nothing to the ref image args",
+          build_krea2_edit_ref_image_args(enabled_params(), source_gives_vision=True)
+          == "preset=krea2_edit,vlm_size=768",
+          "the neutral path must stay byte identical to before this knob existed")
+    check("a source vision weight is placed after a neutral slot per reference",
+          build_krea2_edit_ref_image_args(weighted_vision, source_gives_vision=True)
+          == "preset=krea2_edit,vlm_size=768,vlm_image_token_weight=1,vlm_image_token_weight=0.5",
+          "the runtime reads these positionally over references then vlm images")
+    check("two references produce two neutral slots before the source weight",
+          build_krea2_edit_ref_image_args(
+              enabled_params(references=[{"filename": "scene.png"}, {"filename": "person.png"}],
+                             img2img_source_vlm_image_token_weight=0.5),
+              source_gives_vision=True)
+          == ("preset=krea2_edit,vlm_size=768,"
+              "vlm_image_token_weight=1,vlm_image_token_weight=1,vlm_image_token_weight=0.5"))
+    check("a source that gives no vision contributes no weight, however it is set",
+          build_krea2_edit_ref_image_args(weighted_vision, source_gives_vision=False)
+          == "preset=krea2_edit,vlm_size=768",
+          "an unattached image has no tokens to weight")
+
+    vision_weight_without_edit_mode = {"img2img_source_vlm_image_token_weight": 0.5,
+                                       "img2img_source_vision_grounding_size": "auto"}
+    check("a source vision weight reaches the runtime with edit mode off",
+          krea2_edit_native_args_fields(vision_weight_without_edit_mode,
+                                        source_gives_vision=True)
+          == {"ref_image_args": "vlm_image_token_weight=0.5"},
+          "img2img with vision emits no other ref image args, so the weight needs its own")
+    check("the edit mode off carrier names no preset, leaving the runtime default",
+          "preset" not in krea2_edit_native_args_fields(
+              vision_weight_without_edit_mode, source_gives_vision=True)["ref_image_args"],
+          "naming a preset here would silently change which sizing rules apply")
+    check("a neutral weight and auto grounding produce no native args at all",
+          krea2_edit_native_args_fields({"img2img_source_vlm_image_token_weight": 1.0,
+                                         "img2img_source_vision_grounding_size": "auto"},
+                                        source_gives_vision=True) == {})
+    check("a source giving no vision is neither sized nor weighted",
+          krea2_edit_native_args_fields({"img2img_source_vlm_image_token_weight": 0.5},
+                                        source_gives_vision=False) == {},
+          "the default grounding size must not conjure args for an unattached image")
+
+    check("auto is offered, so the runtime's own sizing stays reachable",
+          "auto" in SOURCE_VISION_GROUNDING_SIZES,
+          f"got {SOURCE_VISION_GROUNDING_SIZES}")
+    check("every grounding size other than auto is a positive edge length",
+          all(str(size).isdigit() and int(size) > 0
+              for size in SOURCE_VISION_GROUNDING_SIZES if size != "auto"),
+          f"got {SOURCE_VISION_GROUNDING_SIZES}")
+    check("the default grounding size is one of the offered options",
+          DEFAULT_SOURCE_VISION_GROUNDING_SIZE in SOURCE_VISION_GROUNDING_SIZES,
+          f"default={DEFAULT_SOURCE_VISION_GROUNDING_SIZE}")
+    check("an unspecified grounding size takes the default rather than the runtime's own",
+          build_source_vision_grounding_args({}, source_gives_vision=True)
+          == ["vlm_resize_mode=longest_side", f"vlm_size={DEFAULT_SOURCE_VISION_GROUNDING_SIZE}"],
+          "a deliberate, predictable size is preferred over an inherited area band")
+
+    check("auto grounding emits nothing, leaving the runtime's own sizing",
+          build_source_vision_grounding_args(
+              {"img2img_source_vision_grounding_size": "auto"},
+              source_gives_vision=True) == [],
+          "this is the path every img2img vision job took before this control existed")
+    check("an unrecognised grounding size falls back to the default rather than being sent on",
+          build_source_vision_grounding_args(
+              {"img2img_source_vision_grounding_size": "enormous"},
+              source_gives_vision=True)
+          == ["vlm_resize_mode=longest_side", f"vlm_size={DEFAULT_SOURCE_VISION_GROUNDING_SIZE}"],
+          "the runtime would only warn and ignore a value it does not know")
+    check("a chosen grounding size sets a longest side rather than an area",
+          build_source_vision_grounding_args(
+              {"img2img_source_vision_grounding_size": "768"},
+              source_gives_vision=True)
+          == ["vlm_resize_mode=longest_side", "vlm_size=768"],
+          "an explicit edge length is what makes the token count predictable")
+    check("a source that gives no vision is not sized at all",
+          build_source_vision_grounding_args(
+              {"img2img_source_vision_grounding_size": "768"},
+              source_gives_vision=False) == [],
+          "nothing reaches the vision tower, so there is nothing to size")
+
+    grounded_vision_without_edit_mode = {"img2img_source_vision_grounding_size": "512"}
+    check("a grounding size reaches the runtime with edit mode off",
+          krea2_edit_native_args_fields(grounded_vision_without_edit_mode,
+                                        source_gives_vision=True)
+          == {"ref_image_args": "vlm_resize_mode=longest_side,vlm_size=512"},
+          f"got {krea2_edit_native_args_fields(grounded_vision_without_edit_mode, source_gives_vision=True)}")
+    check("a grounding size and a vision weight travel together",
+          krea2_edit_native_args_fields(
+              {"img2img_source_vision_grounding_size": "512",
+               "img2img_source_vlm_image_token_weight": 0.5},
+              source_gives_vision=True)
+          == {"ref_image_args": "vlm_resize_mode=longest_side,vlm_size=512,vlm_image_token_weight=0.5"})
+    check("edit mode keeps its own grounding size for its references",
+          build_krea2_edit_ref_image_args(
+              enabled_params(img2img_source_vision_grounding_size="512"),
+              source_gives_vision=True)
+          == "preset=krea2_edit,vlm_size=768",
+          "one request carries one vlm size; the edit preset's grounding wins")
 
     print()
     if failures:

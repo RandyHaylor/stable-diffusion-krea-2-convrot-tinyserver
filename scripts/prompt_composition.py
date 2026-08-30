@@ -24,6 +24,25 @@ HIRES_VISION_SOURCES = ("img2img_source", "krea2edit_references",
                         "stage_one_output", "none")
 DEFAULT_HIRES_VISION_SOURCE = "krea2edit_references"
 
+# How strongly one image's tags pull, relative to the rest of the prompt. The
+# runtime reads A1111 attention syntax, so a weight is expressed in the prompt
+# text itself rather than as a request field.
+NEUTRAL_TAG_PROMPT_WEIGHT = 1.0
+
+
+def wrap_tag_group_in_attention_weight(tag_group: str, tag_prompt_weight: float) -> str:
+    """One image's tags, weighted against the rest of the prompt.
+
+    A neutral weight returns the group untouched, so the common case sends no
+    attention syntax at all. Unescaped parentheses would read as nested attention
+    groups, but danbooru tags arrive with theirs already escaped, so the group can
+    be wrapped whole.
+    """
+    tag_group = tag_group.strip()
+    if not tag_group or tag_prompt_weight == NEUTRAL_TAG_PROMPT_WEIGHT:
+        return tag_group
+    return f"({tag_group}:{tag_prompt_weight:g})"
+
 
 def hires_stage_uses_krea2_edit_references(hires_vision_source: str) -> bool:
     """Whether the hires request should carry the Krea2 Edit references at all."""

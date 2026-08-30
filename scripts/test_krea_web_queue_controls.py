@@ -27,6 +27,10 @@ ONE_PIXEL_PNG_BASE64 = (
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
 )
 STUB_GENERATION_SECONDS = 1.5
+# Underscores and the escaped parens of a real danbooru tag, so the prompt text
+# these produce exercises the same formatting a live tagger would.
+STUB_DANBOORU_TAGS = ["1girl", "hatsune_miku_\\(vocaloid\\)"]
+STUB_TAG_GROUP_TEXT = "1girl, hatsune miku \\(vocaloid\\)"
 
 stub_state = {
     "generation_requests": [],
@@ -470,6 +474,94 @@ def main() -> int:
           == "img2img-tags-routed-nowhere",
           "no tags may be appended when no stage asked for them")
 
+    def run_job_and_wait(params: dict, prompt: str):
+        client.post("/api/jobs", json={"params": params}, headers=session_headers)
+        return wait_until(
+            lambda: next((j for j in client.get("/api/state", headers=session_headers).json()["history"]
+                          if (j["params"] or {}).get("prompt") == prompt
+                          and j["status"] == "completed"), None),
+            20, f"{prompt} job to complete")
+
+    neutral_weight_params = build_job_params("source-tags-at-neutral-weight")
+    neutral_weight_params["source_image"] = uploaded_source["name"]
+    neutral_weight_params["img2img_source_tags_to_stage_one"] = True
+    run_job_and_wait(neutral_weight_params, "source-tags-at-neutral-weight")
+    check("an unweighted tag group reaches the prompt as bare text",
+          find_generation_request_for_prompt("source-tags-at-neutral-weight")["prompt"]
+          == f"source-tags-at-neutral-weight, {STUB_TAG_GROUP_TEXT}",
+          f"got {find_generation_request_for_prompt('source-tags-at-neutral-weight')['prompt']!r}")
+
+    weighted_tag_params = build_job_params("source-tags-weighted")
+    weighted_tag_params["source_image"] = uploaded_source["name"]
+    weighted_tag_params["img2img_source_tags_to_stage_one"] = True
+    weighted_tag_params["img2img_source_tag_prompt_weight"] = 1.3
+    run_job_and_wait(weighted_tag_params, "source-tags-weighted")
+    check("a weighted tag group reaches the prompt wrapped in attention syntax",
+          find_generation_request_for_prompt("source-tags-weighted")["prompt"]
+          == f"source-tags-weighted, ({STUB_TAG_GROUP_TEXT}:1.3)",
+          f"got {find_generation_request_for_prompt('source-tags-weighted')['prompt']!r}")
+
+    both_stages_weighted_params = build_job_params("source-tags-weighted-both-stages")
+    both_stages_weighted_params["source_image"] = uploaded_source["name"]
+    both_stages_weighted_params["img2img_source_tags_to_stage_one"] = True
+    both_stages_weighted_params["img2img_source_tags_to_hires"] = True
+    both_stages_weighted_params["img2img_source_tag_prompt_weight"] = 1.3
+    both_stages_weighted_params["hires"] = True
+    run_job_and_wait(both_stages_weighted_params, "source-tags-weighted-both-stages")
+    check("one tag weight for both stages keeps the generation in a single request",
+          len(find_all_generation_requests_for_prompt("source-tags-weighted-both-stages")) == 1,
+          "a weight shared by both stages must not force the hires pass to vary")
+
+    vision_weight_params = build_job_params("img2img-vision-weighted")
+    vision_weight_params["source_image"] = uploaded_source["name"]
+    vision_weight_params["img2img_source_vision_to_stage_one"] = True
+    vision_weight_params["img2img_source_vlm_image_token_weight"] = 0.5
+    vision_weight_params["img2img_source_vision_grounding_size"] = "auto"
+    run_job_and_wait(vision_weight_params, "img2img-vision-weighted")
+    vision_weight_request = find_generation_request_for_prompt("img2img-vision-weighted")
+    check("a vision weight travels as a ref image arg even with edit mode off",
+          vision_weight_request.get("ref_image_args") == "vlm_image_token_weight=0.5",
+          f"got ref_image_args={vision_weight_request.get('ref_image_args')!r}")
+    check("a weighted vision image is still sent as a vlm image",
+          len(vision_weight_request.get("vlm_images", [])) == 1,
+          "the weight scales the tokens of an image that must still be attached")
+
+    grounded_vision_params = build_job_params("img2img-vision-grounded")
+    grounded_vision_params["source_image"] = uploaded_source["name"]
+    grounded_vision_params["img2img_source_vision_to_stage_one"] = True
+    grounded_vision_params["img2img_source_vision_grounding_size"] = "512"
+    run_job_and_wait(grounded_vision_params, "img2img-vision-grounded")
+    check("a chosen source vision size reaches the runtime as a longest-side resize",
+          find_generation_request_for_prompt("img2img-vision-grounded").get("ref_image_args")
+          == "vlm_resize_mode=longest_side,vlm_size=512",
+          f"got {find_generation_request_for_prompt('img2img-vision-grounded').get('ref_image_args')!r}")
+
+    neutral_vision_params = build_job_params("img2img-vision-neutral")
+    neutral_vision_params["source_image"] = uploaded_source["name"]
+    neutral_vision_params["img2img_source_vision_to_stage_one"] = True
+    neutral_vision_params["img2img_source_vision_grounding_size"] = "auto"
+    run_job_and_wait(neutral_vision_params, "img2img-vision-neutral")
+    check("auto grounding with a neutral weight sends no ref image args at all",
+          "ref_image_args" not in find_generation_request_for_prompt("img2img-vision-neutral"),
+          "this path must stay exactly as it was before either knob existed")
+
+    defaulted_vision_params = build_job_params("img2img-vision-defaulted")
+    defaulted_vision_params["source_image"] = uploaded_source["name"]
+    defaulted_vision_params["img2img_source_vision_to_stage_one"] = True
+    run_job_and_wait(defaulted_vision_params, "img2img-vision-defaulted")
+    check("a vision job that names no size is grounded at the default longest side",
+          find_generation_request_for_prompt("img2img-vision-defaulted").get("ref_image_args")
+          == "vlm_resize_mode=longest_side,vlm_size=1024",
+          f"got {find_generation_request_for_prompt('img2img-vision-defaulted').get('ref_image_args')!r}")
+
+    no_vision_params = build_job_params("img2img-without-vision")
+    no_vision_params["source_image"] = uploaded_source["name"]
+    no_vision_params["img2img_source_as_starting_latent"] = True
+    run_job_and_wait(no_vision_params, "img2img-without-vision")
+    check("an img2img job with no vision routing is never given grounding args",
+          "ref_image_args" not in find_generation_request_for_prompt("img2img-without-vision"),
+          "the default size must not attach itself to a source the tower never reads")
+
     noisy_img2img_params = build_job_params("img2img-noise-multiplier")
     noisy_img2img_params["source_image"] = uploaded_source["name"]
     noisy_img2img_params["img2img_denoise"] = 0.75
@@ -804,14 +896,22 @@ def run_main_with_a_disposable_output_directory() -> int:
 
     The queue checks post through the real upload and save routes, so without
     this every run would leave stub images behind for the user to sift out.
+
+    The tagger is stubbed too: the real one needs an ONNX model this suite must
+    not load, and a fixed tag list is what makes the composed prompt assertable.
+    Only the model read is replaced, so the tags are still rendered into prompt
+    text by the real formatter.
     """
     original_output_dir = krea_web.OUTPUT_DIR
+    original_tag_image_file = krea_web.wd14_tagging.tag_image_file
     with tempfile.TemporaryDirectory() as disposable_output_directory:
         krea_web.OUTPUT_DIR = Path(disposable_output_directory)
+        krea_web.wd14_tagging.tag_image_file = lambda _path: list(STUB_DANBOORU_TAGS)
         try:
             return main()
         finally:
             krea_web.OUTPUT_DIR = original_output_dir
+            krea_web.wd14_tagging.tag_image_file = original_tag_image_file
 
 
 if __name__ == "__main__":
