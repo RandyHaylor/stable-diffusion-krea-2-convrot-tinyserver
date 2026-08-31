@@ -33,6 +33,7 @@ from hires_tiling import (
     hires_tile_vision_ref_image_args,
     hires_tiling_hop_sizes,
     renders_hires_by_tiling,
+    renders_hires_from_existing_source,
     sends_each_hires_tile_to_the_vision_tower,
 )
 from tiled_refine import blend_tiles_into_canvas, covering_grid_tile_boxes
@@ -568,16 +569,26 @@ class QueueManager:
         stage = "krea-web-highres" if hires_enabled else "krea-web"
 
         if renders_hires_by_tiling(p):
-            # Tiling repaints decoded pixels, so the first stage has to be rendered
-            # and saved on its own before any tile can be cut from it.
-            first_stage_names = self.run_single_backend_generation(
-                p,
-                hires=False,
-                prefix=f"krea-web-lowres-{job['id']}",
-                tag_groups=main_tag_groups,
-                vlm_image_names=stage_one_vision_images)
+            if renders_hires_from_existing_source(p):
+                # The source image stands in for a first stage, so nothing is
+                # sampled from noise. It is the user's own file: it is never
+                # among the names this job may delete below.
+                refined_source_name = str(p["source_image"])
+                first_stage_names = []
+                print(f"[web] tiled hires refines the existing source "
+                      f"{refined_source_name}, no first stage rendered", flush=True)
+            else:
+                # Tiling repaints decoded pixels, so the first stage has to be
+                # rendered and saved on its own before any tile can be cut from it.
+                first_stage_names = self.run_single_backend_generation(
+                    p,
+                    hires=False,
+                    prefix=f"krea-web-lowres-{job['id']}",
+                    tag_groups=main_tag_groups,
+                    vlm_image_names=stage_one_vision_images)
+                refined_source_name = first_stage_names[0]
             tiled_names = self.render_hires_by_tiling(
-                p, first_stage_names[0], f"{stage}-{job['id']}",
+                p, refined_source_name, f"{stage}-{job['id']}",
                 compose_hires_prompt(p["prompt"], str(p.get("hires_prompt", "")),
                                      str(p.get("hires_prompt_mode", "append")),
                                      hires_image_tag_groups),
@@ -741,12 +752,14 @@ class QueueManager:
         would leave a turbo checkpoint sampling far too few steps.
         """
         plan = describe_hires_tiling_plan(p)
-        hop_sizes = hires_tiling_hop_sizes(p)
         target_size = (int(p["hires_width"]), int(p["hires_height"]))
         tile_loras = (select_loras_for_stage(p.get("extra_loras", []), "hires")
                       or select_loras_for_stage(p.get("extra_loras", []), "main"))
 
         current_image = Image.open(OUTPUT_DIR / Path(first_stage_name).name).convert("RGB")
+        # The hop ladder starts at whatever this image actually is. A rendered
+        # first stage is the tile size, but an existing source can be anything.
+        hop_sizes = hires_tiling_hop_sizes(p, source_size=current_image.size)
         for hop_index, hop_size in enumerate(hop_sizes):
             current_image = self.render_one_tiling_hop(
                 p, current_image, hop_size, plan, tile_loras,

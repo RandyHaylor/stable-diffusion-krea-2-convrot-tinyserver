@@ -141,19 +141,36 @@ HIRES_TILING_HOP_MODES = ("single", "doubling")
 DEFAULT_HIRES_TILING_HOP_MODE = "doubling"
 
 
-def hires_tiling_hop_sizes(params: dict) -> list[tuple[int, int]]:
+def hires_tiling_hop_sizes(params: dict,
+                           source_size: tuple[int, int] | None = None) -> list[tuple[int, int]]:
     """The sizes a tiled hires pass steps through, ending exactly on the target.
 
     One hop is cheapest but its usable denoise falls as the factor rises, so a
     large target is reached by repeated doublings instead: each hop stays inside
     the range a tiled repaint holds together over, and only the last one lands on
     whatever odd size was actually asked for.
+
+    The ladder starts at `source_size` when given. A rendered first stage is the
+    tile size, so that is the default; an existing image being refined can be any
+    size, and starting the ladder anywhere else would mis-plan every hop.
+
+    No hop lands below the tile size, because a canvas smaller than one tile
+    cannot be tiled at all. A source below the tile size is therefore resampled
+    up to it in one step, which may exceed the hop factor; there is no way to do
+    better, since the intervening sizes have nothing to tile.
     """
     tile_width, tile_height = hires_tile_size(params)
     target_width = int(params.get("hires_width", 0) or 0)
     target_height = int(params.get("hires_height", 0) or 0)
     if tile_width <= 0 or tile_height <= 0:
         return []
+
+    ladder_width, ladder_height = (source_size if source_size is not None
+                                   else (tile_width, tile_height))
+    if ladder_width <= 0 or ladder_height <= 0:
+        return []
+    ladder_width = max(ladder_width, tile_width)
+    ladder_height = max(ladder_height, tile_height)
 
     target = (target_width, target_height)
     hop_mode = str(params.get("hires_tiling_hops", DEFAULT_HIRES_TILING_HOP_MODE))
@@ -163,7 +180,7 @@ def hires_tiling_hop_sizes(params: dict) -> list[tuple[int, int]]:
         return [target]
 
     hops: list[tuple[int, int]] = []
-    current_width, current_height = tile_width, tile_height
+    current_width, current_height = ladder_width, ladder_height
     # Bounded by the factor shrinking geometrically; the guard is for safety, not
     # for a case that is expected to arise.
     while len(hops) < 8:
@@ -231,6 +248,22 @@ def anchors_each_hires_tile_to_its_neighbours(params: dict) -> bool:
     if requested not in HIRES_TILE_SOURCE_MODES:
         requested = DEFAULT_HIRES_TILE_SOURCE_MODE
     return requested == "anchored"
+
+
+def renders_hires_from_existing_source(params: dict) -> bool:
+    """Whether the img2img source is refined directly, with no first stage rendered.
+
+    The source image takes the place of a generated first stage, so the tiled
+    hires pass repaints it and nothing is sampled from noise. Requires tiling,
+    because the in-request hires continues a latent and has no way to start from
+    an image; and requires an actual source, since a flag alone has nothing to
+    refine.
+    """
+    if not params.get("img2img_source_replaces_first_stage"):
+        return False
+    if not str(params.get("source_image", "")).strip():
+        return False
+    return renders_hires_by_tiling(params)
 
 
 def describe_hires_tiling_plan(params: dict) -> dict:

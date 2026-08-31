@@ -28,6 +28,7 @@ from hires_tiling import (  # noqa: E402
     MAXIMUM_TILING_HOP_FACTOR,
     recommended_maximum_hires_denoise_for_tiling,
     renders_hires_by_tiling,
+    renders_hires_from_existing_source,
 )
 
 failures: list[str] = []
@@ -213,6 +214,63 @@ def main() -> int:
     check("hops are strictly growing, so none is wasted",
           all(later[0] > earlier[0] and later[1] > earlier[1]
               for earlier, later in zip(tripling_hops, tripling_hops[1:])))
+
+    check("hop planning starts from a given source size when one is supplied",
+          hires_tiling_hop_sizes(params(hires_width=2432, hires_height=3648),
+                                 source_size=(1216, 1824)) == [(2432, 3648)],
+          "a 1216px source only needs one doubling to reach 2432px")
+    check("a source below the tile size is planned as though it were tile sized",
+          hires_tiling_hop_sizes(params(hires_width=2432, hires_height=3648),
+                                 source_size=(416, 608))
+          == hires_tiling_hop_sizes(params(hires_width=2432, hires_height=3648)),
+          "the sizes between a small source and one tile have nothing to tile")
+    check("a source larger than the tile needs fewer hops than a tile-sized one",
+          len(hires_tiling_hop_sizes(params(hires_width=2432, hires_height=3648),
+                                    source_size=(1664, 2432)))
+          < len(hires_tiling_hop_sizes(params(hires_width=2432, hires_height=3648))),
+          "it has less distance left to travel")
+    check("every hop from an existing source stays within the factor of the last",
+          all(max(hop[0] / previous[0], hop[1] / previous[1])
+              <= MAXIMUM_TILING_HOP_FACTOR + 0.001
+              for previous, hop in zip(
+                  [(1216, 1824)] + hires_tiling_hop_sizes(
+                      params(hires_width=2432, hires_height=3648), source_size=(1216, 1824)),
+                  hires_tiling_hop_sizes(
+                      params(hires_width=2432, hires_height=3648), source_size=(1216, 1824)))),
+          f"got {hires_tiling_hop_sizes(params(hires_width=2432, hires_height=3648), source_size=(1216, 1824))}")
+    check("a source already at the target needs a single hop that changes nothing",
+          hires_tiling_hop_sizes(params(hires_width=2432, hires_height=3648),
+                                 source_size=(2432, 3648)) == [(2432, 3648)])
+
+    # A canvas smaller than one tile cannot be tiled, so no hop may land below the
+    # tile size however small the source is.
+    for tiny_source in ((1, 1), (16, 24), (200, 300), (700, 1000)):
+        tiny_hops = hires_tiling_hop_sizes(
+            params(hires_width=1664, hires_height=2432), source_size=tiny_source)
+        check(f"a {tiny_source[0]}x{tiny_source[1]} source produces no hop below the tile",
+              all(hop[0] >= 832 and hop[1] >= 1216 for hop in tiny_hops),
+              f"got {tiny_hops}")
+        check(f"a {tiny_source[0]}x{tiny_source[1]} source still ends on the target",
+              tiny_hops[-1] == (1664, 2432),
+              f"got {tiny_hops}")
+        check(f"a {tiny_source[0]}x{tiny_source[1]} source does not blow up the hop count",
+              len(tiny_hops) <= 3,
+              f"got {len(tiny_hops)} hops: {tiny_hops}")
+
+    check("refining an existing source is off unless both the flag and an image are set",
+          not renders_hires_from_existing_source(params())
+          and not renders_hires_from_existing_source(
+              params(img2img_source_replaces_first_stage=True))
+          and not renders_hires_from_existing_source(params(source_image="a.png")),
+          "a flag with no image, or an image with no flag, must not skip the first stage")
+    check("refining an existing source engages with both the flag and an image",
+          renders_hires_from_existing_source(
+              params(img2img_source_replaces_first_stage=True, source_image="a.png")))
+    check("refining an existing source needs tiling, the only path starting from pixels",
+          not renders_hires_from_existing_source(
+              params(img2img_source_replaces_first_stage=True, source_image="a.png",
+                     hires_tiling="off")),
+          "the in-request hires continues a latent and cannot start from an image")
 
     for far_width in (2432, 3328, 5000, 8000):
         far_hops = hires_tiling_hop_sizes(params(hires_width=far_width,

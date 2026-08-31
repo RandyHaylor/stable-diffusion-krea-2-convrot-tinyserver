@@ -93,6 +93,17 @@ Vision tower is indexed at startup, NOT resident
     - `loading llm vision` is `model_loader` reading the file, not a VRAM upload
     - `total params memory size` is a registry total, NOT residency
 
+An existing image can be tile-upscaled with no first stage at all
+    - `img2img_source_replaces_first_stage` puts the source image where a
+      generated first stage would go; `renders_hires_from_existing_source()`
+    - Requires tiling: the in-request hires continues a latent and cannot start
+      from pixels. The UI notice says so rather than silently generating anyway.
+    - Tiles are still conditioned on the stage one prompt text
+    - The source is the USER'S file and is never unlinked; a generated first
+      stage is, when `save_lowres` is off
+    - The hop ladder starts at the source's real size, clamped to at least one
+      tile, since a canvas below one tile has nothing to tile
+
 Tiled hires is a separate path, not a setting on the normal one
     - `hires_tiling = on` -> `renders_hires_by_tiling()` routes around the
       in-request hires entirely

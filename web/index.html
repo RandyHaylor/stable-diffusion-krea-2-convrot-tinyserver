@@ -339,6 +339,7 @@ button.danger{background:#49252a;border-color:#813942}
         <span id="selectedSourceResolution"></span>
         <button type="button" onclick="chooseSourceImage()">Load source image</button>
         <label class="source-choice-radio" title="Encode the source image and start the first stage from it instead of from noise. The denoise strength and noise multiplier below apply to it. Krea2 Edit needs a pure-noise target, so this is ignored while edit mode is on."><input id="img2img_source_as_starting_latent" type="checkbox"> Use as starting latent</label>
+        <label class="source-choice-radio" title="Refine this image directly as the hires stage, with no first stage generated at all: it is resampled to the hires target and repainted as tiles. Needs hires tiling on, since only the tiled path starts from pixels rather than continuing a latent. The tiles are still conditioned on the prompt above, and the source file is never deleted. An image smaller than the main resolution is resampled up to it in one step, because there is nothing to tile below one tile."><input id="img2img_source_replaces_first_stage" type="checkbox" onchange="refreshNoticesThatDependOnStageSettings()"> Send to hires stage (disables first stage)</label>
         <span class="tag-routing" title="Let the vision model read the source image for the chosen stage. Krea2 never shows it the init image on its own, and this costs nothing in the diffusion model's attention sequence."><label><input id="img2img_source_vision_to_stage_one" type="checkbox"> Vision tokens to stage 1</label><label class="image-contribution-weight" title="How hard the vision model's reading of this image pulls, for both stages. Exactly 1 leaves the runtime on its unweighted path.">weight<input id="img2img_source_vlm_image_token_weight" type="number" value="1" step="0.05" min="0" autocomplete="off"></label></span>
         <span class="tag-routing" title="Read WD14 danbooru tags from the source image and add them to the chosen stage's prompt.">WD14 tags to: <label><input id="img2img_source_tags_to_stage_one" type="checkbox"> stage 1</label><label><input id="img2img_source_tags_to_hires" type="checkbox"> hires</label><label class="image-contribution-weight" title="How hard this image's tags pull against the rest of the prompt, for both stages. Exactly 1 appends them as plain text.">weight<input id="img2img_source_tag_prompt_weight" type="number" value="1" step="0.05" min="0" autocomplete="off"></label></span>
         <input id="sourceImageFile" type="file" accept="image/png,image/jpeg,.png,.jpg,.jpeg" hidden>
@@ -871,6 +872,18 @@ function refreshHiresTilingNotice(){
   const rows = tileStartCountCoveringLength(hiresHeight, tileHeight, overlap);
   const tileCount = columns * rows;
   const tilingRequested = $('hires').checked && $('hires_tiling').value === 'on';
+  const refinesExistingSource = $('img2img_source_replaces_first_stage').checked
+    && !!selectedSourceImage;
+  if (refinesExistingSource && !tilingRequested) {
+    // The in-request hires continues a latent, so it has no way to start from an
+    // image. Saying so beats silently generating a first stage anyway.
+    notice.hidden = false;
+    notice.textContent =
+      'Send to hires stage needs Hires tiling on and the hires pass enabled: only ' +
+      'the tiled path starts from pixels. As set, a first stage will be generated ' +
+      'normally and the source used only as you have it routed above.';
+    return;
+  }
   notice.hidden = !(tilingRequested && tileCount > 1);
 
   const upscaleFactor = Math.max(hiresWidth / tileWidth, hiresHeight / tileHeight);
@@ -911,6 +924,7 @@ function collectParams(){
     save_lowres: $('save_lowres').checked,
     source_image: selectedSourceImage,
     img2img_source_as_starting_latent: $('img2img_source_as_starting_latent').checked,
+    img2img_source_replaces_first_stage: $('img2img_source_replaces_first_stage').checked,
     img2img_source_vision_to_stage_one: $('img2img_source_vision_to_stage_one').checked,
     img2img_source_tags_to_stage_one: $('img2img_source_tags_to_stage_one').checked,
     img2img_source_tags_to_hires: $('img2img_source_tags_to_hires').checked,
@@ -981,6 +995,8 @@ function formatJobDetails(params){
     ['Img2img source', generationType === 'img2img' ? (p.source_image || '') : ''],
     ['Img2img denoise', generationType === 'img2img' ? (p.img2img_denoise ?? '') : ''],
     ['Img2img noise multiplier', generationType === 'img2img' ? (p.img2img_noise_multiplier ?? '') : ''],
+    ['Img2img source role', p.img2img_source_replaces_first_stage
+      ? 'refined directly as the hires stage, no first stage' : ''],
     ['Img2img vision on source',
      p.img2img_source_vision_to_stage_one ? 'stage 1' : ''],
     ['Img2img vision size',
@@ -1120,6 +1136,7 @@ function loadParamsIntoForm(p){
   });
   setSourceImage(p.source_image || '');
   $('img2img_source_as_starting_latent').checked = !!p.img2img_source_as_starting_latent;
+  $('img2img_source_replaces_first_stage').checked = !!p.img2img_source_replaces_first_stage;
   $('img2img_source_vision_to_stage_one').checked = !!p.img2img_source_vision_to_stage_one;
   $('img2img_source_tags_to_stage_one').checked = !!p.img2img_source_tags_to_stage_one;
   $('img2img_source_tags_to_hires').checked = !!p.img2img_source_tags_to_hires;

@@ -653,6 +653,41 @@ def main() -> int:
               recombined.size == (112, 112),
               f"got {recombined.size}")
 
+    refine_source_params = build_job_params("hires-refines-existing-source")
+    refine_source_params["source_image"] = uploaded_source["name"]
+    refine_source_params["img2img_source_replaces_first_stage"] = True
+    refine_source_params["hires"] = True
+    refine_source_params["width"] = 64
+    refine_source_params["height"] = 64
+    refine_source_params["hires_width"] = 112
+    refine_source_params["hires_height"] = 112
+    refine_source_params["hires_tiling"] = "on"
+    refine_source_params["hires_tile_overlap"] = 16
+    refine_source_job = run_job_and_wait(refine_source_params, "hires-refines-existing-source")
+    refine_source_requests = find_all_generation_requests_for_prompt(
+        "hires-refines-existing-source")
+    check("refining an existing source renders no first stage",
+          all("init_image" in request for request in refine_source_requests),
+          "every request should be a tile refine; a from-noise pass has no init_image")
+    check("refining an existing source sends only tile requests",
+          len(refine_source_requests) == 4,
+          f"got {len(refine_source_requests)}, expected one per tile and no first stage")
+    check("the user's source image is never deleted by the job",
+          (krea_web.OUTPUT_DIR / uploaded_source["name"]).is_file(),
+          "a generated first stage is discarded when save_lowres is off; "
+          "an uploaded source must not be")
+    refine_source_outputs = refine_source_job.get("outputs") or []
+    check("refining an existing source returns only the recombined image",
+          len(refine_source_outputs) == 1,
+          f"got {refine_source_outputs}")
+    if refine_source_outputs:
+        check("the refined result is exactly the requested hires size",
+              Image.open(krea_web.OUTPUT_DIR / refine_source_outputs[-1]).size == (112, 112))
+    check("the tiles are conditioned on the stage one prompt text",
+          all(request["prompt"].startswith("hires-refines-existing-source")
+              for request in refine_source_requests),
+          f"got {[r['prompt'][:60] for r in refine_source_requests]}")
+
     no_vision_params = build_job_params("img2img-without-vision")
     no_vision_params["source_image"] = uploaded_source["name"]
     no_vision_params["img2img_source_as_starting_latent"] = True
