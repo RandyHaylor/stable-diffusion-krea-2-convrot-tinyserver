@@ -92,6 +92,27 @@ def main() -> int:
           describe_missing_prompt("a photo", True, True, "", "replace") is not None,
           "tags are not known at queue time, so they cannot satisfy the gate")
 
+    check("a first stage that never samples does not need a prompt of its own",
+          describe_missing_prompt("", False, True, "", "append",
+                                  first_stage_samples=False,
+                                  hires_tagging_enabled=True) is None,
+          "the source stands in for the first stage, so only the hires pass reads a prompt")
+    check("a first stage that never samples is satisfied by a hires prompt alone",
+          describe_missing_prompt("", False, True, "sharp focus", "append",
+                                  first_stage_samples=False) is None)
+    check("a first stage that never samples still needs the hires pass to have text",
+          describe_missing_prompt("", False, True, "", "append",
+                                  first_stage_samples=False) is not None,
+          "nothing would condition either pass")
+    check("a first stage that never samples is still satisfied by the main prompt",
+          describe_missing_prompt("a photo", False, True, "", "append",
+                                  first_stage_samples=False) is None,
+          "the main prompt still conditions the request when nothing is sampled from noise")
+    check("a sampled first stage is still gated when only the hires pass has tagging",
+          describe_missing_prompt("", False, True, "", "append",
+                                  hires_tagging_enabled=True) is not None,
+          "the first stage would sample from an empty prompt")
+
     check("tags are added after the override is applied, in append mode",
           compose_hires_prompt("a photo", "sharp focus", "append", ["cat girl"])
           == "a photo, sharp focus, cat girl")

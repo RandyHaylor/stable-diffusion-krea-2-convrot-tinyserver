@@ -6,7 +6,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from hires_staging import (  # noqa: E402
+from hires_staging import (
+    renders_hires_from_existing_source,  # noqa: E402
     hires_settings_vary_from_main,
     lora_selections_differ,
     select_loras_for_stage,
@@ -111,6 +112,21 @@ def main() -> int:
           not hires_settings_vary_from_main(True, [both_stages], hires_prompt="   ",
                                            hires_negative_prompt=""),
           "whitespace is not an override")
+
+    check("the source replaces the first stage when the flag and a source are both set",
+          renders_hires_from_existing_source({"img2img_source_replaces_first_stage": True,
+                                              "source_image": "puppy.png"}))
+    check("the flag alone refines nothing, so it does not replace the first stage",
+          not renders_hires_from_existing_source({"img2img_source_replaces_first_stage": True,
+                                                  "source_image": "   "}))
+    check("a source without the flag leaves the first stage alone",
+          not renders_hires_from_existing_source({"img2img_source_replaces_first_stage": False,
+                                                  "source_image": "puppy.png"}))
+    check("replacing the first stage does not depend on any tiling setting",
+          renders_hires_from_existing_source({"img2img_source_replaces_first_stage": True,
+                                              "source_image": "puppy.png",
+                                              "tiled_diffusion": "off"}),
+          "the hires stage continues a latent either way")
 
     print()
     if failures:

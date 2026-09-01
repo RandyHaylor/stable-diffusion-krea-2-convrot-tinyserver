@@ -13,6 +13,18 @@ between the passes, which costs a LoRA reload but not the continuity.
 from __future__ import annotations
 
 
+def renders_hires_from_existing_source(params: dict) -> bool:
+    """Whether the img2img source stands in for a first stage, which is not sampled.
+
+    The hires pass always continues the main pass's latent, so supplying the
+    source as that latent is all this takes. A flag with no source has nothing to
+    refine, so both are required.
+    """
+    if not params.get("img2img_source_replaces_first_stage"):
+        return False
+    return bool(str(params.get("source_image", "")).strip())
+
+
 def select_loras_for_stage(extra_loras: list[dict], stage: str) -> list[dict]:
     """The backend-shaped LoRA list for one stage.
 

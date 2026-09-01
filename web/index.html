@@ -149,6 +149,10 @@ button.danger{background:#49252a;border-color:#813942}
 .viewer-info-actions button{padding:7px;font-size:12px}
 .viewer-info-actions button:disabled{opacity:.45;cursor:not-allowed}
 @media(max-width:900px){.grid{grid-template-columns:1fr}.fields{grid-template-columns:1fr 1fr}}
+
+.stage-one-unused label, .stage-one-unused textarea, .stage-one-unused input {
+  opacity: 0.45;
+}
 </style></head><body>
 
 <div id="loginGate">
@@ -213,12 +217,12 @@ button.danger{background:#49252a;border-color:#813942}
   <input id="negative_prompt" value="" autocomplete="off">
 
   <div class="fields two">
-    <div><label for="resolution">Resolution</label><div class="combo" data-field="resolution"></div></div>
+    <div data-first-stage-only><label for="resolution">Resolution</label><div class="combo" data-field="resolution"></div></div>
     <div><label for="seed">Seed</label><div class="combo" data-field="seed"></div></div>
   </div>
 
   <div class="fields">
-    <div><label for="steps">Steps</label><div class="combo" data-field="steps"></div></div>
+    <div data-first-stage-only><label for="steps" title="Model evaluations actually run. Under a denoise below 1 the runtime keeps only the tail of its schedule, so the app scales the count it sends until the tail is this number. The denoise still picks the starting sigma.">Steps</label><div class="combo" data-field="steps"></div></div>
     <div><label for="cfg">CFG</label><div class="combo" data-field="cfg"></div></div>
   </div>
 
@@ -263,7 +267,7 @@ button.danger{background:#49252a;border-color:#813942}
 
     <div class="fields">
       <div><label for="hires_resolution">Hires resolution</label><div class="combo" data-field="hires_resolution"></div></div>
-      <div><label for="hires_steps">Hires steps</label><div class="combo" data-field="hires_steps"></div></div>
+      <div><label for="hires_steps" title="Model evaluations actually run in the hires pass, scaled the same way against the hires denoise.">Hires steps</label><div class="combo" data-field="hires_steps"></div></div>
       <div><label for="hires_denoise">Denoise</label><div class="combo" data-field="hires_denoise"></div></div>
       <div><label for="hires_noise_multiplier">Hires noise multiplier</label><div class="combo" data-field="hires_noise_multiplier"></div></div>
     </div>
@@ -284,19 +288,18 @@ button.danger{background:#49252a;border-color:#813942}
 
     <div class="fields two">
       <div><label for="hires_upscaler">Hires upscaler</label><div class="combo" data-field="hires_upscaler"></div></div>
-      <div><label for="hires_tiling" title="Render the hires pass as overlapping tiles instead of inside the request. Each tile is the main pass's own resolution, so a target too large for one attention sequence becomes reachable. The cost is the latent continuity the in-request pass keeps: tiling decodes the first stage, resamples it up and repaints it, so it round trips through the VAE and runs one request per tile.">Hires tiling</label><div class="combo" data-field="hires_tiling"></div></div>
-      <div><label for="hires_tile_overlap" title="How far neighbouring hires tiles share, in pixels of the target. The blend cross-fades across this band, so a wider overlap hides a disagreement between tiles over more pixels, at the cost of more tiles to cover the same target.">Hires tile overlap</label><div class="combo" data-field="hires_tile_overlap"></div></div>
-      <div><label for="hires_tile_vision" title="Also show each tile's own starting pixels to the vision model, the same paradigm the img2img source uses: the pixels are both the starting latent and what the vision tower describes, so a tile is conditioned on its own content rather than on a prompt written for the whole image. Costs vision tokens in every tile's attention sequence, about 23% more time. On a subject whose every tile the prompt already describes it changes nothing and costs about 23% more time, but where regions differ it is the difference between a tile of bare floor staying floor and being repainted as a reflected copy of the whole room.">Hires tile vision</label><div class="combo" data-field="hires_tile_vision"></div></div>
-      <div><label for="hires_tile_vision_weight" title="How hard a tile's own vision tokens pull. Exactly 1 leaves the runtime on its unweighted path. Only applies while hires tile vision is on.">Hires tile vision weight</label><div class="combo" data-field="hires_tile_vision_weight"></div></div>
-      <div><label for="hires_tiling_hops" title="How far each tiled pass resamples. Doubling reaches a distant target in several passes that each at most double, which measured 27% more detail than one large hop; the last pass lands on the exact target. Single goes straight there in one pass, which is cheaper and softer. Neither fixes ghosting: that is governed by denoise and tile count.">Hires tiling hops</label><div class="combo" data-field="hires_tiling_hops"></div></div>
-      <div><label for="hires_tile_source" title="Where each tile's starting pixels come from. Anchored writes each finished tile back before the next is cut, so a tile starts from its neighbour's refined pixels where they overlap and has agreement to preserve. Independent cuts every tile from the same resampled canvas, so neighbours can disagree about anything crossing their shared band, and the blend turns that disagreement into a translucent ghost rather than removing it. Both cost the same number of passes.">Hires tile source</label><div class="combo" data-field="hires_tile_source"></div></div>
+      <div><label for="tiled_diffusion" title="Denoise the hires pass as overlapping latent tiles fused every step, instead of one attention sequence over the whole canvas. Never leaves the latent and never runs more than one request: tiles are fused inside each step, so neighbours cannot drift apart. This is what makes a target too large for one attention sequence reachable. A pass that fits inside a single tile is denoised whole, so the main pass is untouched while the hires pass tiles.">Tiled diffusion</label><div class="combo" data-field="tiled_diffusion"></div></div>
+      <div><label for="tiled_diffusion_grid" title="How many tiles the canvas is split into, as columns x rows. Tile count is what decides the cost of a step and what the ghosting guidance is keyed on, so it is what you choose; the tile size follows from the grid, the overlap and the target, and is reported below. A 1x1 grid denoises the canvas whole.">Tiled diffusion grid</label><div class="combo" data-field="tiled_diffusion_grid"></div></div>
+      <div><label for="tiled_diffusion_overlap" title="How far neighbouring tiles share, in pixels. The per-step fusion weights each tile by a raised cosine, so this band is where neighbours blend. Wider costs more tiles to cover the same canvas.">Tiled diffusion overlap</label><div class="combo" data-field="tiled_diffusion_overlap"></div></div>
+      <div><label for="tiled_diffusion_rope_offset" title="Give each tile position ids at its true place in the canvas rather than letting every tile claim the origin. Measured slightly worse for coherence at eight real steps, so it is off by default and kept for comparison.">Tiled diffusion RoPE offsets</label><div class="combo" data-field="tiled_diffusion_rope_offset"></div></div>
     </div>
-    <div id="hiresTilingNotice" class="hires-variation-notice" hidden></div>
+    <div id="tiledDiffusionNotice" class="hires-variation-notice" hidden></div>
   </div>
 
   <div class="fields two">
     <div><label for="vae_tile_size">VAE tile size (latent; 32 = 256px)</label><div class="combo" data-field="vae_tile_size"></div></div>
   </div>
+
 
   <h2 style="margin-top:16px">LoRAs</h2>
   <div id="loraList" class="loralist">no LoRAs found in models/loras</div>
@@ -339,15 +342,18 @@ button.danger{background:#49252a;border-color:#813942}
         <span id="selectedSourceResolution"></span>
         <button type="button" onclick="chooseSourceImage()">Load source image</button>
         <label class="source-choice-radio" title="Encode the source image and start the first stage from it instead of from noise. The denoise strength and noise multiplier below apply to it. Krea2 Edit needs a pure-noise target, so this is ignored while edit mode is on."><input id="img2img_source_as_starting_latent" type="checkbox"> Use as starting latent</label>
-        <label class="source-choice-radio" title="Refine this image directly as the hires stage, with no first stage generated at all: it is resampled to the hires target and repainted as tiles. Needs hires tiling on, since only the tiled path starts from pixels rather than continuing a latent. The tiles are still conditioned on the prompt above, and the source file is never deleted. An image smaller than the main resolution is resampled up to it in one step, because there is nothing to tile below one tile."><input id="img2img_source_replaces_first_stage" type="checkbox" onchange="refreshNoticesThatDependOnStageSettings()"> Send to hires stage (disables first stage)</label>
+        <label class="source-choice-radio" title="Refine this image as the hires stage with no first stage sampled at all: it is encoded as the latent the hires pass continues. Needs the hires pass enabled. The stage one prompt and negative prompt STILL condition the request, so they are dimmed rather than hidden while this is on. The source file is never deleted."><input id="img2img_source_replaces_first_stage" type="checkbox" onchange="refreshNoticesThatDependOnStageSettings()"> Send to hires stage (disables first stage)</label>
         <span class="tag-routing" title="Let the vision model read the source image for the chosen stage. Krea2 never shows it the init image on its own, and this costs nothing in the diffusion model's attention sequence."><label><input id="img2img_source_vision_to_stage_one" type="checkbox"> Vision tokens to stage 1</label><label class="image-contribution-weight" title="How hard the vision model's reading of this image pulls, for both stages. Exactly 1 leaves the runtime on its unweighted path.">weight<input id="img2img_source_vlm_image_token_weight" type="number" value="1" step="0.05" min="0" autocomplete="off"></label></span>
         <span class="tag-routing" title="Read WD14 danbooru tags from the source image and add them to the chosen stage's prompt.">WD14 tags to: <label><input id="img2img_source_tags_to_stage_one" type="checkbox"> stage 1</label><label><input id="img2img_source_tags_to_hires" type="checkbox"> hires</label><label class="image-contribution-weight" title="How hard this image's tags pull against the rest of the prompt, for both stages. Exactly 1 appends them as plain text.">weight<input id="img2img_source_tag_prompt_weight" type="number" value="1" step="0.05" min="0" autocomplete="off"></label></span>
         <input id="sourceImageFile" type="file" accept="image/png,image/jpeg,.png,.jpg,.jpeg" hidden>
       </div>
     </div>
+    <div id="sendToHiresResolutionNotice" class="hires-variation-notice" hidden></div>
     <div class="fields two img2img-settings">
-      <div><label for="img2img_denoise">Img2img denoise strength</label><div class="combo" data-field="img2img_denoise"></div></div>
+      <div data-first-stage-only><label for="img2img_denoise">Img2img denoise strength</label><div class="combo" data-field="img2img_denoise"></div></div>
       <div><label for="img2img_noise_multiplier">Img2img noise multiplier</label><div class="combo" data-field="img2img_noise_multiplier"></div></div>
+      <div data-send-to-hires-only><label for="source_pixel_budget_edge" title="An upper limit on the pixels the source is encoded at, as an area: 1024 means 1024 x 1024 pixels' worth. A source already inside the limit is left at its own size; only an oversized one is scaled down. Enlarging is what the hires target is for, so it never happens here. The source keeps its own aspect.">Send to hires pixel limit</label><div class="combo" data-field="source_pixel_budget_edge"></div></div>
+      <div data-send-to-hires-only><label for="source_size_increment" title="Round each side of that size DOWN to a multiple of this. Rounding down takes a small centre crop rather than stretching the image. 1 leaves the exact fit, which can land off the VAE's factor of 8; 64 keeps both sides on resolutions the model is used to.">Send to hires size increment</label><div class="combo" data-field="source_size_increment"></div></div>
       <div><label for="img2img_source_vision_grounding_size" title="Longest side the source image is resized to before the vision model reads it. Its vision tokens join the prompt's own in the sequence the diffusion blocks attend over, so a larger size costs VRAM and time in every step. Auto leaves the runtime's own sizing, which budgets by area instead and so varies with the source image.">Source vision size</label><div class="combo" data-field="img2img_source_vision_grounding_size"></div></div>
     </div>
   </div>
@@ -403,18 +409,19 @@ const COMBO_FIELDS = {
   grounding_px:    {value:'768', step:64,   options:['384','512','640','768']},
   fit_mode:        {value:'fit', options:['fit','crop']},
   img2img_source_vision_grounding_size: {value:'1024', options:['auto','384','512','768','1024','1215','1536','2048']},
-  hires_tiling:       {value:'off', options:['off','on']},
-  hires_tile_overlap: {value:'128', step:16, options:['64','96','128','192','256']},
-  hires_tile_source:  {value:'anchored', options:['anchored','independent']},
-  hires_tiling_hops:  {value:'doubling', options:['doubling','single']},
-  hires_tile_vision:  {value:'on', options:['on','off']},
-  hires_tile_vision_weight: {value:'1', step:0.05, options:['0.5','0.75','1','1.25','1.5']},
+  source_pixel_budget_edge:   {value:'1024', options:['512','768','1024','1216','1536','2024']},
+  source_size_increment:      {value:'64', options:['1','8','16','32','64']},
+  tiled_diffusion:            {value:'off', options:['off','on']},
+  tiled_diffusion_grid:       {value:'2x2', options:['1x1','1x2','2x1','2x2','2x3','3x2','3x3']},
+  tiled_diffusion_overlap:    {value:'128', step:8, options:['64','96','128','192','256']},
+  tiled_diffusion_rope_offset:{value:'off', options:['off','on']},
 };
-const NUMERIC_FIELDS = ['seed','steps','cfg','flow_shift','pag_scale','pag_start','pag_end','hires_steps','hires_denoise','vae_tile_size','img2img_denoise','img2img_noise_multiplier','grounding_px','beta_schedule_alpha','beta_schedule_beta','hires_noise_multiplier','hires_tile_overlap','hires_tile_vision_weight'];
+const NUMERIC_FIELDS = ['seed','steps','cfg','flow_shift','pag_scale','pag_start','pag_end','hires_steps','hires_denoise','vae_tile_size','img2img_denoise','img2img_noise_multiplier','grounding_px','beta_schedule_alpha','beta_schedule_beta','hires_noise_multiplier','tiled_diffusion_overlap'];
 const TEXT_FIELDS = ['sampler','scheduler','hires_upscaler','extra_sample_args','pag_layers','fit_mode',
   'hires_prompt','hires_prompt_mode','hires_negative_prompt','hires_negative_prompt_mode','stage_one_wd14_tags','hires_vision_source',
-  'img2img_source_vision_grounding_size','hires_tiling','hires_tile_source','hires_tiling_hops',
-  'hires_tile_vision'];
+  'img2img_source_vision_grounding_size',
+  'tiled_diffusion','tiled_diffusion_grid','tiled_diffusion_rope_offset',
+  'source_pixel_budget_edge','source_size_increment'];
 
 let openComboList = null;
 
@@ -477,6 +484,7 @@ function joinResolution(width, height){
 
 let sessionToken = null;
 let selectedSourceImage = '';
+let selectedSourceResolution = {width: 0, height: 0};
 const outputCache = new Map();
 let outputListLoaded = false;
 let outputStateSignature = '';
@@ -509,7 +517,9 @@ async function setSourceImage(name){
     const cached = outputCache.get(selectedName);
     const info = cached?.width && cached?.height ? cached : await api(`/api/output-info/${encodeURIComponent(selectedName)}`);
     if (selectedSourceImage === selectedName) {
+      selectedSourceResolution = {width: info.width, height: info.height};
       $('selectedSourceResolution').textContent = `${info.width}×${info.height}`;
+      refreshNoticesThatDependOnStageSettings();
     }
   } catch (e) {
     if (selectedSourceImage === selectedName) $('selectedSourceResolution').textContent = 'Resolution unavailable';
@@ -817,7 +827,15 @@ function hiresSettingsVaryFromMain(){
 
 function refreshHiresVariationNotice(){
   const notice = $('hiresVariationNotice');
-  if (notice) notice.hidden = !hiresSettingsVaryFromMain();
+  if (!notice) return;
+  notice.hidden = !hiresSettingsVaryFromMain();
+}
+
+function sendsSourceStraightToHiresStage(){
+  return !!($('img2img_source_replaces_first_stage')
+            && $('img2img_source_replaces_first_stage').checked
+            && selectedSourceImage
+            && $('hires').checked);
 }
 
 function anyImageSendsTagsToStageOne(){
@@ -841,75 +859,90 @@ function tileStartCountCoveringLength(canvasLength, tileLength, minimumOverlap){
   return Math.ceil((canvasLength - tileLength) / stride) + 1;
 }
 
-function tilingHopSizes(tileWidth, tileHeight, targetWidth, targetHeight){
-  // Mirrors hires_tiling_hop_sizes for the notice only.
-  if ($('hires_tile_source') && $('hires_tiling_hops')
-      && $('hires_tiling_hops').value === 'single') return [[targetWidth, targetHeight]];
-  const hops = [];
-  let width = tileWidth, height = tileHeight;
-  while (hops.length < 8) {
-    const remaining = Math.max(targetWidth / width, targetHeight / height);
-    if (remaining <= 2) { hops.push([targetWidth, targetHeight]); return hops; }
-    width = Math.floor(width * 2);
-    height = Math.floor(height * 2);
-    hops.push([width, height]);
-  }
-  hops.push([targetWidth, targetHeight]);
-  return hops;
+function refreshFirstStageFieldDimming(){
+  // Sending the source to the hires stage skips stage one's sampling, but its
+  // prompt still conditions the request, so this dims rather than disables.
+  const skipsFirstStage = sendsSourceStraightToHiresStage();
+  document.querySelectorAll('[data-first-stage-only]').forEach(element => {
+    element.classList.toggle('stage-one-unused', skipsFirstStage);
+  });
+  document.querySelectorAll('[data-send-to-hires-only]').forEach(element => {
+    element.hidden = !skipsFirstStage;
+  });
+  refreshSendToHiresResolutionNotice(skipsFirstStage);
 }
 
-function refreshHiresTilingNotice(){
-  const notice = $('hiresTilingNotice');
+function refreshSendToHiresResolutionNotice(skipsFirstStage){
+  // Mirrors resolution_for_source_within_pixel_budget for the notice only.
+  const notice = $('sendToHiresResolutionNotice');
   if (!notice) return;
-  const [width, height] = splitResolution($('resolution').value);
-  const [hiresWidth, hiresHeight] = splitResolution($('hires_resolution').value);
-  const tileWidth = Math.min(width, hiresWidth);
-  const tileHeight = Math.min(height, hiresHeight);
-  const overlap = Math.min(Number($('hires_tile_overlap').value) || 128,
-                           Math.max(1, Math.floor(tileWidth / 2)),
-                           Math.max(1, Math.floor(tileHeight / 2)));
-  const columns = tileStartCountCoveringLength(hiresWidth, tileWidth, overlap);
-  const rows = tileStartCountCoveringLength(hiresHeight, tileHeight, overlap);
-  const tileCount = columns * rows;
-  const tilingRequested = $('hires').checked && $('hires_tiling').value === 'on';
-  const refinesExistingSource = $('img2img_source_replaces_first_stage').checked
-    && !!selectedSourceImage;
-  if (refinesExistingSource && !tilingRequested) {
-    // The in-request hires continues a latent, so it has no way to start from an
-    // image. Saying so beats silently generating a first stage anyway.
-    notice.hidden = false;
-    notice.textContent =
-      'Send to hires stage needs Hires tiling on and the hires pass enabled: only ' +
-      'the tiled path starts from pixels. As set, a first stage will be generated ' +
-      'normally and the source used only as you have it routed above.';
+  notice.hidden = !skipsFirstStage;
+  if (!skipsFirstStage) return;
+  const sourceWidth = selectedSourceResolution.width;
+  const sourceHeight = selectedSourceResolution.height;
+  if (!sourceWidth || !sourceHeight) {
+    notice.textContent = 'Load a source image to see the size it will be encoded at.';
     return;
   }
-  notice.hidden = !(tilingRequested && tileCount > 1);
+  const budgetEdge = Number($('source_pixel_budget_edge').value) || 1024;
+  const increment = Math.max(1, Number($('source_size_increment').value) || 1);
+  const scale = Math.min(1,
+    Math.sqrt((budgetEdge * budgetEdge) / (sourceWidth * sourceHeight)));
+  const width = Math.max(increment, Math.floor((sourceWidth * scale) / increment) * increment);
+  const height = Math.max(increment, Math.floor((sourceHeight * scale) / increment) * increment);
+  const croppedFrom = `${sourceWidth}x${sourceHeight}`;
+  const unchanged = width === sourceWidth && height === sourceHeight;
+  notice.textContent =
+    `Source ${croppedFrom} will be encoded at ${width}x${height} ` +
+    `(${(width * height / 1000000).toFixed(2)}MP` +
+    (unchanged ? ', its own size, inside the ' : ', scaled down to the ') +
+    `${budgetEdge}x${budgetEdge} limit)` +
+    (unchanged ? '' : `, centre cropped to land on ${increment}px`) +
+    `. The hires target does the upscaling; the main resolution is not used.`;
+}
 
-  const upscaleFactor = Math.max(hiresWidth / tileWidth, hiresHeight / tileHeight);
-  // Keyed on tile count, matching recommended_maximum_hires_denoise_for_tiling:
-  // a 2x2 grid held together at 0.6, a 4x4 needed 0.35.
-  const recommendedDenoise = tileCount > 4 ? 0.35 : 0.6;
-  const denoise = Number($('hires_denoise').value);
-  const hopSizes = tilingHopSizes(tileWidth, tileHeight, hiresWidth, hiresHeight);
-  let text =
-    `Hires tiling: ${columns}x${rows} = ${tileCount} passes of ${tileWidth}x${tileHeight}, ` +
-    `overlapping ${overlap}px, ${upscaleFactor.toFixed(2)}x upscale` +
-    (hopSizes.length > 1 ? ` over ${hopSizes.length} hops` : '') +
-    `. One request per tile, and no latent continuity.`;
-  if (denoise > recommendedDenoise + 0.01) {
-    text += ` Denoise ${denoise} is high for a ${tileCount} tile grid; ` +
-      `${recommendedDenoise} is the highest measured clean here. Above it, ` +
-      `neighbouring tiles invent different content and the blend averages both ` +
-      `into a ghost. More hops do not fix that.`;
+function refreshTiledDiffusionNotice(){
+  // Mirrors describe_tiled_diffusion_settings for the notice only. Tiling is
+  // decided by the largest canvas the request reaches, which is the hires target
+  // whenever the hires pass is on.
+  const notice = $('tiledDiffusionNotice');
+  if (!notice) return;
+  if ($('tiled_diffusion').value !== 'on') { notice.hidden = true; return; }
+  notice.hidden = false;
+  const [mainWidth, mainHeight] = splitResolution($('resolution').value);
+  const [hiresWidth, hiresHeight] = splitResolution($('hires_resolution').value);
+  const width = $('hires').checked ? Math.max(mainWidth, hiresWidth) : mainWidth;
+  const height = $('hires').checked ? Math.max(mainHeight, hiresHeight) : mainHeight;
+  const [columns, rows] = ($('tiled_diffusion_grid').value || '2x2').split('x').map(Number);
+  if (!(columns * rows > 1)) {
+    notice.textContent =
+      `A 1x1 grid denoises ${width}x${height} as a single tile, so tiled diffusion ` +
+      `changes nothing.`;
+    return;
   }
-  notice.textContent = text;
+  const requestedOverlap = Math.max(8, Number($('tiled_diffusion_overlap').value) || 128);
+  const tileSize = (length, count) => {
+    if (count < 2) return length;
+    const overlap = Math.max(0, Math.min(requestedOverlap, Math.floor(length / count)));
+    return Math.min(length, Math.max(8,
+      Math.ceil((length + overlap * (count - 1)) / count / 8) * 8));
+  };
+  const realOverlap = (length, tile, count) =>
+    count < 2 ? 0 : Math.max(0, Math.round(tile - (length - tile) / (count - 1)));
+  const tileWidth = tileSize(width, columns);
+  const tileHeight = tileSize(height, rows);
+  notice.textContent =
+    `${columns} x ${rows} tiles of ${tileWidth}x${tileHeight} covering ${width}x${height}, ` +
+    `overlapping ${realOverlap(width, tileWidth, columns)}px across and ` +
+    `${realOverlap(height, tileHeight, rows)}px down, fused every step inside one request. ` +
+    `Each step costs ${columns * rows} model evaluations.`;
 }
 
 function refreshNoticesThatDependOnStageSettings(){
+  refreshFirstStageFieldDimming();
+  refreshTiledDiffusionNotice();
   refreshHiresVariationNotice();
   refreshReferenceFidelityVramNotices();
-  refreshHiresTilingNotice();
 }
 
 function collectParams(){
@@ -1022,11 +1055,11 @@ function formatJobDetails(params){
       ? p.stage_one_wd14_tags : ''],
     ['Hires reference size', p.hires && p.hires_reference_encode_size > 0
       ? p.hires_reference_encode_size : ''],
-    ['Hires tiling', p.hires && p.hires_tiling === 'on'
-      ? `${p.hires_tile_source || 'independent'}, ${p.hires_tile_overlap ?? 128}px overlap, `
-        + `${p.hires_tiling_hops || 'single'} hop(s)` : ''],
-    ['Hires tile vision', p.hires && p.hires_tiling === 'on' && p.hires_tile_vision === 'on'
-      ? `on, weight ${p.hires_tile_vision_weight ?? 1}` : ''],
+    ['Send to hires sizing', p.img2img_source_replaces_first_stage
+      ? `${p.source_pixel_budget_edge ?? 1024}px limit, ${p.source_size_increment ?? 64}px increment` : ''],
+    ['Tiled diffusion', p.tiled_diffusion === 'on'
+      ? `${p.tiled_diffusion_grid || '2x2'} grid, ${p.tiled_diffusion_overlap ?? 128}px overlap`
+        + (p.tiled_diffusion_rope_offset === 'on' ? ', RoPE offsets on' : '') : ''],
     ['Detected WD14 tags', (p.wd14_tags || []).join(' | ')],
     ['VAE tile', p.vae_tile_size ?? ''],
   ];
@@ -1114,13 +1147,12 @@ function loadParamsIntoForm(p){
   // area sizing, so they reload as auto rather than taking the current default.
   $('img2img_source_vision_grounding_size').value =
     p.img2img_source_vision_grounding_size || 'auto';
-  $('hires_tiling').value = p.hires_tiling || 'off';
-  $('hires_tile_overlap').value = p.hires_tile_overlap ?? 128;
-  // Params saved before anchoring existed were rendered from one static canvas.
-  $('hires_tile_source').value = p.hires_tile_source || 'independent';
-  $('hires_tiling_hops').value = p.hires_tiling_hops || 'single';
-  $('hires_tile_vision').value = p.hires_tile_vision || 'off';
-  $('hires_tile_vision_weight').value = p.hires_tile_vision_weight ?? 1;
+  $('tiled_diffusion').value = p.tiled_diffusion || 'off';
+  $('source_pixel_budget_edge').value = p.source_pixel_budget_edge ?? 1024;
+  $('source_size_increment').value = p.source_size_increment ?? 64;
+  $('tiled_diffusion_grid').value = p.tiled_diffusion_grid || '2x2';
+  $('tiled_diffusion_overlap').value = p.tiled_diffusion_overlap ?? 128;
+  $('tiled_diffusion_rope_offset').value = p.tiled_diffusion_rope_offset || 'off';
   $('hires').checked = !!p.hires;
   $('save_lowres').checked = !!p.save_lowres;
   $('pag_enabled').checked = !!p.pag_enabled;

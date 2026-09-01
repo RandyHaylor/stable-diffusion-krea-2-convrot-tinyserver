@@ -598,95 +598,91 @@ def main() -> int:
     tiled_hires_params["height"] = 64
     tiled_hires_params["hires_width"] = 112
     tiled_hires_params["hires_height"] = 112
-    tiled_hires_params["hires_tiling"] = "on"
-    tiled_hires_params["hires_tile_overlap"] = 16
+    tiled_hires_params["tiled_diffusion"] = "on"
+    tiled_hires_params["tiled_diffusion_grid"] = "2x2"
+    tiled_hires_params["tiled_diffusion_overlap"] = 16
     tiled_hires_job = run_job_and_wait(tiled_hires_params, "hires-tiled")
     tiled_hires_requests = find_all_generation_requests_for_prompt("hires-tiled")
-    check("a tiled hires job sends one first stage request plus one per tile",
-          len(tiled_hires_requests) == 1 + 4,
+    check("a tiled diffusion job is still a single request",
+          len(tiled_hires_requests) == 1,
           f"got {len(tiled_hires_requests)} request(s) of sizes "
           f"{[(r.get('width'), r.get('height')) for r in tiled_hires_requests]}")
-    check("the tiled hires first stage carries no native hires block",
-          "hires" not in tiled_hires_requests[0],
-          "tiling replaces the in-request hires rather than running alongside it")
-    check("every tile request is exactly the main pass resolution",
-          all(request.get("width") == 64 and request.get("height") == 64
-              for request in tiled_hires_requests[1:]),
-          "the tile size is what the main pass already proved fits")
-    check("every tile request refines a supplied image rather than starting from noise",
-          all("init_image" in request and request.get("strength")
-              for request in tiled_hires_requests[1:]))
-    check("no tile request asks the runtime for its own hires pass",
-          all("hires" not in request for request in tiled_hires_requests[1:]),
-          "a nested hires inside a tile would double the upscale")
-    # Anchoring is observable from the requests alone: the stub gives each job its
-    # own shade, so a later tile whose starting pixels came from an earlier tile's
-    # output carries that earlier shade rather than the first stage's.
-    anchored_colour_counts = [distinct_colour_count_of_base64_png(request["init_image"])
-                              for request in tiled_hires_requests[1:]]
-    check("the first anchored tile starts from resampled canvas alone",
-          anchored_colour_counts[0] == 1,
-          f"got {anchored_colour_counts}")
-    check("every later anchored tile starts partly from a finished neighbour",
-          all(count > 1 for count in anchored_colour_counts[1:]),
-          f"colours per tile source: {anchored_colour_counts}")
-
-    independent_params = build_job_params("hires-tiled-independent")
-    independent_params.update({k: v for k, v in tiled_hires_params.items()
-                               if k != "prompt"})
-    independent_params["hires_tile_source"] = "independent"
-    run_job_and_wait(independent_params, "hires-tiled-independent")
-    independent_requests = find_all_generation_requests_for_prompt("hires-tiled-independent")
-    independent_colour_counts = [distinct_colour_count_of_base64_png(request["init_image"])
-                                 for request in independent_requests[1:]]
-    check("independent tiles all start from the resampled canvas alone",
-          all(count == 1 for count in independent_colour_counts),
-          f"colours per tile source: {independent_colour_counts}")
-
+    check("the request keeps its native hires block",
+          "hires" in tiled_hires_requests[0],
+          "tiled diffusion refines inside the hires pass rather than replacing it")
+    check("the tiling reaches the runtime as sample args",
+          "tiled_diffusion_tile_width="
+          in tiled_hires_requests[0]["sample_params"]["extra_sample_args"],
+          f"got {tiled_hires_requests[0]['sample_params']['extra_sample_args']!r}")
     tiled_hires_outputs = tiled_hires_job.get("outputs") or []
-    check("a tiled hires job returns one recombined image",
+    check("a tiled diffusion job returns one image",
           len(tiled_hires_outputs) == 1,
           f"got {tiled_hires_outputs}")
-    if tiled_hires_outputs:
-        recombined = Image.open(krea_web.OUTPUT_DIR / tiled_hires_outputs[-1])
-        check("the recombined image is exactly the requested hires size",
-              recombined.size == (112, 112),
-              f"got {recombined.size}")
+    check("the hires block asks the runtime for the requested target",
+          (tiled_hires_requests[0]["hires"]["target_width"],
+           tiled_hires_requests[0]["hires"]["target_height"]) == (112, 112),
+          "the upscale happens inside the runtime, so the request is what this can assert")
+
+    small_canvas_params = build_job_params("tiling-not-needed")
+    small_canvas_params["width"] = 64
+    small_canvas_params["height"] = 64
+    small_canvas_params["tiled_diffusion"] = "on"
+    small_canvas_params["tiled_diffusion_grid"] = "1x1"
+    run_job_and_wait(small_canvas_params, "tiling-not-needed")
+    check("a 1x1 grid sends no tiling args",
+          "tiled_diffusion_tile_width" not in find_generation_request_for_prompt(
+              "tiling-not-needed")["sample_params"]["extra_sample_args"],
+          "a 1x1 grid must stay inert")
 
     refine_source_params = build_job_params("hires-refines-existing-source")
     refine_source_params["source_image"] = uploaded_source["name"]
     refine_source_params["img2img_source_replaces_first_stage"] = True
     refine_source_params["hires"] = True
-    refine_source_params["width"] = 64
-    refine_source_params["height"] = 64
+    refine_source_params["width"] = 128
+    refine_source_params["height"] = 128
     refine_source_params["hires_width"] = 112
     refine_source_params["hires_height"] = 112
-    refine_source_params["hires_tiling"] = "on"
-    refine_source_params["hires_tile_overlap"] = 16
     refine_source_job = run_job_and_wait(refine_source_params, "hires-refines-existing-source")
     refine_source_requests = find_all_generation_requests_for_prompt(
         "hires-refines-existing-source")
-    check("refining an existing source renders no first stage",
-          all("init_image" in request for request in refine_source_requests),
-          "every request should be a tile refine; a from-noise pass has no init_image")
-    check("refining an existing source sends only tile requests",
-          len(refine_source_requests) == 4,
-          f"got {len(refine_source_requests)}, expected one per tile and no first stage")
+    check("sending a source to the hires stage stays one request",
+          len(refine_source_requests) == 1,
+          f"got {len(refine_source_requests)}")
+    check("the source is supplied as the starting image",
+          "init_image" in refine_source_requests[0],
+          "the hires pass continues this latent instead of one sampled from noise")
+    check("the first stage does no sampling of its own",
+          refine_source_requests[0].get("strength") == 0.0,
+          f"got strength {refine_source_requests[0].get('strength')!r}")
+    check("sending a source to the hires stage does not require tiling",
+          "tiled_diffusion_tile_width"
+          not in refine_source_requests[0]["sample_params"]["extra_sample_args"],
+          "the two settings are independent")
     check("the user's source image is never deleted by the job",
           (krea_web.OUTPUT_DIR / uploaded_source["name"]).is_file(),
           "a generated first stage is discarded when save_lowres is off; "
           "an uploaded source must not be")
     refine_source_outputs = refine_source_job.get("outputs") or []
-    check("refining an existing source returns only the recombined image",
+    check("refining an existing source returns one image",
           len(refine_source_outputs) == 1,
           f"got {refine_source_outputs}")
-    if refine_source_outputs:
-        check("the refined result is exactly the requested hires size",
-              Image.open(krea_web.OUTPUT_DIR / refine_source_outputs[-1]).size == (112, 112))
-    check("the tiles are conditioned on the stage one prompt text",
-          all(request["prompt"].startswith("hires-refines-existing-source")
-              for request in refine_source_requests),
-          f"got {[r['prompt'][:60] for r in refine_source_requests]}")
+    check("the hires block still asks for the requested target",
+          (refine_source_requests[0]["hires"]["target_width"],
+           refine_source_requests[0]["hires"]["target_height"]) == (112, 112))
+    check("the job params report the size actually rendered, not the unused one",
+          (refine_source_job["params"]["width"], refine_source_job["params"]["height"])
+          == (64, 64),
+          f"got {refine_source_job['params']['width']}x{refine_source_job['params']['height']}, "
+          f"the queue label and saved PNG read these")
+    check("the first stage size comes from the source, not the main resolution",
+          (refine_source_requests[0]["width"], refine_source_requests[0]["height"])
+          == (64, 64),
+          f"got {refine_source_requests[0]['width']}x{refine_source_requests[0]['height']}, "
+          f"main resolution was 128x128 and the one pixel source floors at one increment")
+    check("the first stage size lands on the chosen increment",
+          refine_source_requests[0]["width"] % 64 == 0
+          and refine_source_requests[0]["height"] % 64 == 0,
+          f"got {refine_source_requests[0]['width']}x{refine_source_requests[0]['height']}")
 
     no_vision_params = build_job_params("img2img-without-vision")
     no_vision_params["source_image"] = uploaded_source["name"]

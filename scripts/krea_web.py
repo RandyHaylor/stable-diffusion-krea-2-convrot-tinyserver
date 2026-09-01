@@ -27,16 +27,22 @@ from PIL import Image
 import uvicorn
 
 import wd14_tagging
-from hires_staging import hires_settings_vary_from_main, select_loras_for_stage
-from hires_tiling import (
-    describe_hires_tiling_plan,
-    hires_tile_vision_ref_image_args,
-    hires_tiling_hop_sizes,
-    renders_hires_by_tiling,
+from hires_staging import (
+    hires_settings_vary_from_main,
     renders_hires_from_existing_source,
-    sends_each_hires_tile_to_the_vision_tower,
+    select_loras_for_stage,
 )
-from tiled_refine import blend_tiles_into_canvas, covering_grid_tile_boxes
+from executed_steps import scheduled_steps_for_executed_steps
+from source_image_sizing import (
+    DEFAULT_SOURCE_PIXEL_BUDGET_EDGE,
+    DEFAULT_SOURCE_SIZE_INCREMENT,
+    cover_crop_box_for_resolution,
+    resolution_for_source_within_pixel_budget,
+)
+from tiled_diffusion import (
+    largest_canvas_the_request_renders,
+    tiled_diffusion_sample_args,
+)
 from image_metadata import cached_civitai_hash, embed_generation_metadata
 from krea2_edit_request import (
     krea2_edit_native_args_fields,
@@ -317,6 +323,28 @@ def load_output_image_as_base64(filename: str) -> str:
     return base64.b64encode(image_path.read_bytes()).decode("ascii")
 
 
+def fit_source_image_for_hires_stage(p: dict, source_name: str) -> tuple[str, int, int]:
+    """The source encoded at its own aspect inside the chosen budget, and that size.
+
+    The main pass resolution is not consulted: a source sent straight to the hires
+    stage decides its own, so a portrait image is never squeezed into a square.
+    """
+    image_path = (OUTPUT_DIR / Path(source_name).name).resolve()
+    if image_path.parent != OUTPUT_DIR.resolve() or not image_path.is_file():
+        raise RuntimeError(f"image not found in outputs: {source_name}")
+    source = Image.open(image_path).convert("RGB")
+    width, height = resolution_for_source_within_pixel_budget(
+        source.width, source.height,
+        int(p.get("source_pixel_budget_edge", DEFAULT_SOURCE_PIXEL_BUDGET_EDGE)),
+        int(p.get("source_size_increment", DEFAULT_SOURCE_SIZE_INCREMENT)))
+    cropped = source.crop(cover_crop_box_for_resolution(
+        source.width, source.height, width, height))
+    fitted = cropped.resize((width, height), Image.LANCZOS)
+    encoded = BytesIO()
+    fitted.save(encoded, format="PNG")
+    return base64.b64encode(encoded.getvalue()).decode("ascii"), width, height
+
+
 def extra_sample_args_including_scheduler_settings(p: dict) -> str:
     """The user's own extra sample args, plus the settings the chosen scheduler accepts.
 
@@ -568,39 +596,6 @@ class QueueManager:
 
         stage = "krea-web-highres" if hires_enabled else "krea-web"
 
-        if renders_hires_by_tiling(p):
-            if renders_hires_from_existing_source(p):
-                # The source image stands in for a first stage, so nothing is
-                # sampled from noise. It is the user's own file: it is never
-                # among the names this job may delete below.
-                refined_source_name = str(p["source_image"])
-                first_stage_names = []
-                print(f"[web] tiled hires refines the existing source "
-                      f"{refined_source_name}, no first stage rendered", flush=True)
-            else:
-                # Tiling repaints decoded pixels, so the first stage has to be
-                # rendered and saved on its own before any tile can be cut from it.
-                first_stage_names = self.run_single_backend_generation(
-                    p,
-                    hires=False,
-                    prefix=f"krea-web-lowres-{job['id']}",
-                    tag_groups=main_tag_groups,
-                    vlm_image_names=stage_one_vision_images)
-                refined_source_name = first_stage_names[0]
-            tiled_names = self.render_hires_by_tiling(
-                p, refined_source_name, f"{stage}-{job['id']}",
-                compose_hires_prompt(p["prompt"], str(p.get("hires_prompt", "")),
-                                     str(p.get("hires_prompt_mode", "append")),
-                                     hires_image_tag_groups),
-                compose_hires_prompt(str(p.get("negative_prompt", "")),
-                                     str(p.get("hires_negative_prompt", "")),
-                                     str(p.get("hires_negative_prompt_mode", "append")), []))
-            if p.get("save_lowres"):
-                return first_stage_names + tiled_names
-            for discarded_name in first_stage_names:
-                (OUTPUT_DIR / Path(discarded_name).name).unlink(missing_ok=True)
-            return tiled_names
-
         return self.run_single_backend_generation(
             p,
             hires=hires_enabled,
@@ -634,15 +629,36 @@ class QueueManager:
         krea2_edit_fields = krea2_edit_payload_fields(p, load_output_image_as_base64)
         # The source image feeds three independent things; only its use as the
         # starting latent conflicts with edit mode, whose target starts as pure noise.
+        # Sending the source straight to the hires stage is the same mechanism with
+        # the first stage's sampling turned off: the source is encoded as the latent
+        # the hires pass continues, so nothing is generated from noise.
+        skips_first_stage_sampling = hires and renders_hires_from_existing_source(p)
         source_name = ("" if (krea2_edit_fields
-                              or not p.get("img2img_source_as_starting_latent"))
+                              or not (p.get("img2img_source_as_starting_latent")
+                                      or skips_first_stage_sampling))
                        else str(p.get("source_image", "")))
+        # A source sent to the hires stage decides the first stage's size itself, so
+        # this is settled before anything that depends on the resolution.
+        fitted_source_base64 = ""
+        if skips_first_stage_sampling:
+            fitted_source_base64, first_stage_width, first_stage_height = (
+                fit_source_image_for_hires_stage(p, source_name))
+            # The job params are what the queue label and the saved PNG report, so
+            # the size actually rendered is written back over the unused one.
+            p["width"], p["height"] = first_stage_width, first_stage_height
+        else:
+            first_stage_width, first_stage_height = int(p["width"]), int(p["height"])
+
+        tiling_canvas_width, tiling_canvas_height = largest_canvas_the_request_renders(
+            {**p, "hires": hires,
+             "width": first_stage_width, "height": first_stage_height})
         sample = {
             "sample_method": p["sampler"], "scheduler": p["scheduler"],
             "sample_steps": int(p["steps"]), "flow_shift": float(p["flow_shift"]),
             "extra_sample_args": join_sample_args(
                 extra_sample_args_including_scheduler_settings(p),
-                img2img_noise_multiplier_sample_arg(p, False, bool(source_name))),
+                img2img_noise_multiplier_sample_arg(p, False, bool(source_name)),
+                tiled_diffusion_sample_args(p, tiling_canvas_width, tiling_canvas_height)),
             "guidance": {"txt_cfg": float(p["cfg"])},
             "pag": {
                 "enabled": bool(p.get("pag_enabled", False)),
@@ -664,7 +680,10 @@ class QueueManager:
             native["hires"] = {
                 "enabled": True, "upscaler": p.get("hires_upscaler", "Latent"),
                 "target_width": int(p["hires_width"]), "target_height": int(p["hires_height"]),
-                "steps": int(p["hires_steps"]), "denoising_strength": float(p["hires_denoise"]),
+                "steps": scheduled_steps_for_executed_steps(
+                    int(p["hires_steps"]), float(p["hires_denoise"]),
+                    sample["extra_sample_args"]),
+                "denoising_strength": float(p["hires_denoise"]),
                 "noise_multiplier": float(p.get("hires_noise_multiplier", 1.0)),
                 "return_lowres_image": bool(lowres_prefix),
                 "await_stage_input": supply_hires_input is not None,
@@ -673,8 +692,13 @@ class QueueManager:
             }
         prompt_text = compose_prompt_with_tag_groups(p["prompt"], tag_groups or [])
         negative_prompt_text = str(p.get("negative_prompt", ""))
-        width, height = int(p["width"]), int(p["height"])
-        steps = int(p["steps"])
+        width, height = first_stage_width, first_stage_height
+        # Only an img2img start latent makes the runtime truncate the schedule, so
+        # only then does the count need scaling to execute the steps that were asked for.
+        steps = (scheduled_steps_for_executed_steps(
+                     int(p["steps"]), float(p.get("img2img_denoise", 0.0)),
+                     sample["extra_sample_args"])
+                 if source_name else int(p["steps"]))
 
         payload = {
             **native,
@@ -702,8 +726,10 @@ class QueueManager:
         if krea2_edit_fields.get("extra_images"):
             payload["ref_images"] = krea2_edit_fields["extra_images"]
         if source_name:
-            payload["init_image"] = load_output_image_as_base64(source_name)
-            payload["strength"] = float(p.get("img2img_denoise", 0.0))
+            payload["init_image"] = (fitted_source_base64 or
+                                     load_output_image_as_base64(source_name))
+            payload["strength"] = (0.0 if skips_first_stage_sampling
+                                   else float(p.get("img2img_denoise", 0.0)))
         # vlm_images reach the vision tower and are never encoded into reference
         # latents, so these cost nothing in the diffusion model's attention sequence.
         for vision_image_name in (vlm_image_names or []):
@@ -735,132 +761,6 @@ class QueueManager:
             (OUTPUT_DIR / name).write_bytes(embed_generation_metadata(image_bytes, metadata_payload))
             names.append(name)
         return names
-
-    def render_hires_by_tiling(self, p: dict, first_stage_name: str, prefix: str,
-                               hires_prompt: str, hires_negative_prompt: str) -> list[str]:
-        """Repaint an upscaled first stage as overlapping tiles and recombine them.
-
-        This is the hires path for targets the in-request latent hires cannot fit.
-        The first stage is resampled up to the full target and each tile is
-        repainted from those resampled pixels, so the detail comes from the
-        repaint rather than from the resampler. The cost is the latent continuity
-        the in-request path keeps: this one round trips through the VAE.
-
-        Every tile is its own request, so unlike the in-request hires this path
-        can honour the per-stage LoRA selection. A hires selection that is empty
-        falls back to the main one rather than silently dropping every LoRA, which
-        would leave a turbo checkpoint sampling far too few steps.
-        """
-        plan = describe_hires_tiling_plan(p)
-        target_size = (int(p["hires_width"]), int(p["hires_height"]))
-        tile_loras = (select_loras_for_stage(p.get("extra_loras", []), "hires")
-                      or select_loras_for_stage(p.get("extra_loras", []), "main"))
-
-        current_image = Image.open(OUTPUT_DIR / Path(first_stage_name).name).convert("RGB")
-        # The hop ladder starts at whatever this image actually is. A rendered
-        # first stage is the tile size, but an existing source can be anything.
-        hop_sizes = hires_tiling_hop_sizes(p, source_size=current_image.size)
-        for hop_index, hop_size in enumerate(hop_sizes):
-            current_image = self.render_one_tiling_hop(
-                p, current_image, hop_size, plan, tile_loras,
-                hires_prompt, hires_negative_prompt,
-                f"hop {hop_index + 1}/{len(hop_sizes)}")
-
-        blended_bytes = BytesIO()
-        current_image.save(blended_bytes, format="PNG")
-
-        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-        name = f"{prefix}-{datetime.now():%Y%m%d-%H%M%S}-0.png"
-        metadata_payload = {"ui_params": dict(p), "seed": int(p["seed"]),
-                            "prompt": hires_prompt, "negative_prompt": hires_negative_prompt,
-                            "hires_tiling_plan": plan,
-                            "hires_tiling_hops": [list(size) for size in hop_sizes]}
-        (OUTPUT_DIR / name).write_bytes(
-            embed_generation_metadata(blended_bytes.getvalue(), metadata_payload))
-        if current_image.size != target_size:
-            raise RuntimeError(f"tiled hires produced {current_image.size}, "
-                               f"expected {target_size}")
-        return [name]
-
-    def render_one_tiling_hop(self, p: dict, source_image: Image.Image,
-                              hop_size: tuple[int, int], plan: dict, tile_loras: list[dict],
-                              hires_prompt: str, hires_negative_prompt: str,
-                              hop_label: str) -> Image.Image:
-        """Resample one step up and repaint that canvas as overlapping tiles.
-
-        Each hop is a complete tiled refine of its own, so a target too far for
-        one repaint is reached by several that each stay inside the factor a
-        tiled repaint holds together over.
-        """
-        tile_boxes = covering_grid_tile_boxes(hop_size[0], hop_size[1],
-                                             plan["tile_width"], plan["tile_height"],
-                                             plan["overlap_pixels"])
-        print(f"[web] tiled hires {hop_label}: {len(tile_boxes)} tiles of "
-              f"{plan['tile_width']}x{plan['tile_height']} overlapping "
-              f"{plan['overlap_pixels']}px into {hop_size[0]}x{hop_size[1]}", flush=True)
-
-        resampled_canvas = source_image.resize(hop_size, Image.LANCZOS)
-        # Anchoring cuts each tile from a canvas already carrying the finished
-        # ones, so a tile starts from its neighbour's refined pixels where they
-        # overlap and has agreement to preserve rather than a conflict to invent.
-        tile_source_canvas = resampled_canvas.copy() if plan["anchored"] else resampled_canvas
-
-        sends_tile_vision = sends_each_hires_tile_to_the_vision_tower(p)
-        tile_vision_args = hires_tile_vision_ref_image_args(p)
-        refined_tiles = []
-        for index, box in enumerate(tile_boxes):
-            tile_source = tile_source_canvas.crop(box)
-            tile_bytes = BytesIO()
-            tile_source.save(tile_bytes, format="PNG")
-            tile_payload = {
-                "sample_params": {
-                    "sample_method": p["sampler"], "scheduler": p["scheduler"],
-                    "sample_steps": int(p["hires_steps"]),
-                    "flow_shift": float(p["flow_shift"]),
-                    "extra_sample_args": extra_sample_args_including_scheduler_settings(p),
-                    "guidance": {"txt_cfg": float(p["cfg"])},
-                },
-                "vae_tiling_params": {"enabled": True,
-                                      "tile_size_x": int(p["vae_tile_size"]),
-                                      "tile_size_y": int(p["vae_tile_size"]),
-                                      "target_overlap": 0.5},
-                "prompt": hires_prompt,
-                "negative_prompt": hires_negative_prompt,
-                "width": tile_source.width,
-                "height": tile_source.height,
-                "seed": int(p["seed"]) + index,
-                "batch_count": 1,
-                "init_image": base64.b64encode(tile_bytes.getvalue()).decode("ascii"),
-                "strength": float(p["hires_denoise"]),
-            }
-            if tile_loras:
-                tile_payload["lora"] = [{"path": Path(lora["path"]).name,
-                                         "multiplier": lora["multiplier"],
-                                         "is_high_noise": False}
-                                        for lora in tile_loras]
-            if sends_tile_vision:
-                # The same pixels serve as the starting latent and as what the
-                # vision tower reads, so the repaint is conditioned on this tile's
-                # own content rather than on a prompt written for the whole image.
-                tile_payload["vlm_images"] = [tile_payload["init_image"]]
-                if tile_vision_args:
-                    tile_payload["ref_image_args"] = tile_vision_args
-            print(f"[web] tiled hires tile {index + 1}/{len(tile_boxes)} at {box}", flush=True)
-            tile_result = self.run_generation_job(tile_payload, None)
-            tile_images = tile_result.get("images", [])
-            if not tile_images:
-                raise RuntimeError(f"tiled hires tile {index + 1} returned no images")
-            encoded = tile_images[0]
-            if encoded.startswith("data:"):
-                encoded = encoded.split(",", 1)[1]
-            refined_tile = Image.open(BytesIO(base64.b64decode(encoded))).convert("RGB")
-            refined_tiles.append(refined_tile)
-            if plan["anchored"]:
-                tile_source_canvas.paste(refined_tile, (box[0], box[1]))
-
-        return blend_tiles_into_canvas(refined_tiles, tile_boxes,
-                                       hop_size[0], hop_size[1],
-                                       plan["overlap_pixels"])
 
     def fetch_backend_capabilities(self, timeout: int = 10) -> dict:
         with urllib.request.urlopen(self.backend + "/sdcpp/v1/capabilities", timeout=timeout) as response:
@@ -1068,7 +968,10 @@ def build_app(user: str, password: str, backend: str) -> FastAPI:
             bool(tagged_images_with_prompt_weights_for_stage(params, "stage_one")),
             bool(params.get("hires")),
             str(params.get("hires_prompt", "")),
-            str(params.get("hires_prompt_mode", "append")))
+            str(params.get("hires_prompt_mode", "append")),
+            first_stage_samples=not renders_hires_from_existing_source(params),
+            hires_tagging_enabled=bool(
+                tagged_images_with_prompt_weights_for_stage(params, "hires")))
         if missing_prompt_reason:
             raise HTTPException(400, missing_prompt_reason)
         checkpoint = str(params.get("checkpoint", ""))

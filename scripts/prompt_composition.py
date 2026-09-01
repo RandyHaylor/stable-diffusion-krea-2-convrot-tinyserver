@@ -94,15 +94,26 @@ def describe_missing_prompt(main_prompt: str,
                             main_tagging_enabled: bool,
                             hires_enabled: bool,
                             hires_prompt: str,
-                            hires_prompt_mode: str) -> str | None:
+                            hires_prompt_mode: str,
+                            first_stage_samples: bool = True,
+                            hires_tagging_enabled: bool = False) -> str | None:
     """Why the job cannot run for want of prompt text, or None when it can.
 
     Tagging counts as supplying the main prompt, since tags become the prompt.
     It cannot satisfy the hires replace mode, though: tags are only known once
     the images have been tagged at generation time, so a replace override with
     no text would send the hires pass an empty prompt.
+
+    A first stage that never samples reads no prompt of its own, so the hires
+    pass supplying one is enough. The main prompt still conditions the request in
+    that case, so it satisfies the requirement too; what cannot happen is neither
+    pass having any text.
     """
-    if not main_prompt.strip() and not main_tagging_enabled:
+    if not first_stage_samples:
+        if not (main_prompt.strip() or main_tagging_enabled
+                or hires_prompt.strip() or hires_tagging_enabled):
+            return "Prompt is required, or enable WD14 tagging to build one from the images"
+    elif not main_prompt.strip() and not main_tagging_enabled:
         return "Prompt is required, or enable WD14 tagging to build one from the images"
     if hires_enabled and hires_prompt_mode == "replace" and not hires_prompt.strip():
         return "Hires prompt is required when the hires mode replaces the main prompt"

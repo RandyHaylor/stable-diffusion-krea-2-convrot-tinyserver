@@ -421,7 +421,7 @@ index 53ab20d..e3d4bb9 100644
      if (!request.gen_params.resolve_and_validate(IMG_GEN, "", runtime.ctx_params->hires_upscalers_dir, true)) {
          error_message = "invalid params";
 diff --git a/examples/server/routes_sdcpp.cpp b/examples/server/routes_sdcpp.cpp
-index 7253dbf..c519510 100644
+index 7253dbf..f45b63e 100644
 --- a/examples/server/routes_sdcpp.cpp
 +++ b/examples/server/routes_sdcpp.cpp
 @@ -77,7 +77,9 @@ static fs::path resolve_display_model_path(const ServerRuntime& runtime) {
@@ -512,7 +512,7 @@ index 7253dbf..c519510 100644
      svr.Post("/sdcpp/v1/img_gen", [runtime](const httplib::Request& req, httplib::Response& res) {
          try {
              if (req.body.empty()) {
-@@ -559,6 +577,69 @@ void register_sdcpp_api_endpoints(httplib::Server& svr, ServerRuntime& rt) {
+@@ -559,6 +577,82 @@ void register_sdcpp_api_endpoints(httplib::Server& svr, ServerRuntime& rt) {
          res.set_content(make_async_job_json(manager, *it->second).dump(), "application/json");
      });
  
@@ -549,11 +549,24 @@ index 7253dbf..c519510 100644
 +        std::vector<std::string> lora_paths;
 +        std::vector<float> lora_multipliers;
 +        if (applies_own_loras) {
++            refresh_lora_cache(*runtime);
 +            for (const auto& entry : body["lora"]) {
 +                if (!entry.is_object() || !entry.contains("path") || !entry["path"].is_string()) {
 +                    continue;
 +                }
-+                lora_paths.push_back(entry["path"].get<std::string>());
++                // A LoRA is named by the same relative path the generation request
++                // uses, so it has to be resolved the same way. An unresolved name
++                // would fail to load and would also never compare equal to the
++                // first pass's selection, forcing a reload that cannot succeed.
++                const std::string requested_path = entry["path"].get<std::string>();
++                const std::string full_path      = get_lora_full_path(*runtime, requested_path);
++                if (full_path.empty()) {
++                    res.status = 400;
++                    res.set_content(json{{"error", "unknown lora: " + requested_path}}.dump(),
++                                    "application/json");
++                    return;
++                }
++                lora_paths.push_back(full_path);
 +                lora_multipliers.push_back(entry.value("multiplier", 1.0f));
 +            }
 +        }
@@ -856,7 +869,7 @@ index 3d7ff03..8a863d3 100644
          if (sd_version_is_hunyuan_video(version) && byt5) {
              std::vector<std::string> quoted_texts;
 diff --git a/src/model/diffusion/krea2.hpp b/src/model/diffusion/krea2.hpp
-index b3947b7..c260ddb 100644
+index b3947b7..56b9bdb 100644
 --- a/src/model/diffusion/krea2.hpp
 +++ b/src/model/diffusion/krea2.hpp
 @@ -261,7 +261,8 @@ namespace Krea2 {
@@ -959,7 +972,7 @@ index b3947b7..c260ddb 100644
                  sd::ggml_graph_cut::mark_graph_cut(hidden_states, "krea2.blocks." + std::to_string(i), "hidden_states");
              }
  
-@@ -687,6 +703,59 @@ namespace Krea2 {
+@@ -687,6 +703,73 @@ namespace Krea2 {
          }
      };
  
@@ -1016,10 +1029,24 @@ index b3947b7..c260ddb 100644
 +        return ids;
 +    }
 +
++    // SPIKE, not a shipped feature: where the latent being denoised sits inside a
++    // larger canvas, in TOKEN units. Tiled diffusion hands the model one tile at
++    // a time, and without this every tile is labelled as starting at the origin,
++    // so they all claim the same place. Set by the sampler's tile loop and reset
++    // to zero straight after, so a normal whole-image generation is untouched.
++    __STATIC_INLINE__ int& krea2_tiled_tile_row_offset_tokens() {
++        static int row_offset_tokens = 0;
++        return row_offset_tokens;
++    }
++    __STATIC_INLINE__ int& krea2_tiled_tile_col_offset_tokens() {
++        static int col_offset_tokens = 0;
++        return col_offset_tokens;
++    }
++
      __STATIC_INLINE__ std::vector<float> gen_krea2_pe(int h,
                                                        int w,
                                                        int patch_size,
-@@ -695,21 +764,69 @@ namespace Krea2 {
+@@ -695,21 +778,71 @@ namespace Krea2 {
                                                        float theta,
                                                        const std::vector<int>& axes_dim,
                                                        const std::vector<ggml_tensor*>& ref_latents,
@@ -1027,7 +1054,10 @@ index b3947b7..c260ddb 100644
 +                                                      Rope::RefIndexMode ref_index_mode,
 +                                                      bool center_refs_on_target) {
          auto txt_ids = Rope::gen_flux_txt_ids(bs, context_len, 3, {});
-         auto img_ids = Rope::gen_flux_img_ids(h, w, patch_size, bs, 3, 0, 0, 0, false);
+-        auto img_ids = Rope::gen_flux_img_ids(h, w, patch_size, bs, 3, 0, 0, 0, false);
++        auto img_ids = Rope::gen_flux_img_ids(h, w, patch_size, bs, 3, 0,
++                                              krea2_tiled_tile_row_offset_tokens(),
++                                              krea2_tiled_tile_col_offset_tokens(), false);
          auto ids     = Rope::concat_ids(txt_ids, img_ids, bs);
          if (ref_latents.size() > 0) {
 -            auto refs_ids = Rope::gen_refs_ids(patch_size, bs, 3, 1, ref_latents, ref_index_mode, 1.0f, false, 0);
@@ -1091,7 +1121,7 @@ index b3947b7..c260ddb 100644
  
          Krea2Runner(ggml_backend_t backend,
                      const String2TensorStorage& tensor_storage_map      = {},
-@@ -733,7 +850,9 @@ namespace Krea2 {
+@@ -733,7 +866,9 @@ namespace Krea2 {
                                   const sd::Tensor<float>& timesteps_tensor,
                                   const sd::Tensor<float>& context_tensor,
                                   const std::vector<sd::Tensor<float>>& ref_latents_tensor = {},
@@ -1102,7 +1132,7 @@ index b3947b7..c260ddb 100644
              ggml_cgraph* gf        = new_graph_custom(KREA2_GRAPH_SIZE);
              ggml_tensor* x         = make_input(x_tensor);
              ggml_tensor* timesteps = make_input(timesteps_tensor);
-@@ -755,13 +874,52 @@ namespace Krea2 {
+@@ -755,13 +890,52 @@ namespace Krea2 {
                                         config.theta,
                                         config.axes_dim,
                                         ref_latents,
@@ -1157,7 +1187,7 @@ index b3947b7..c260ddb 100644
              ggml_build_forward_expand(gf, out);
              return gf;
          }
-@@ -771,9 +929,11 @@ namespace Krea2 {
+@@ -771,9 +945,11 @@ namespace Krea2 {
                                    const sd::Tensor<float>& timesteps,
                                    const sd::Tensor<float>& context,
                                    const std::vector<sd::Tensor<float>>& ref_latents = {},
@@ -1171,7 +1201,7 @@ index b3947b7..c260ddb 100644
              };
              return restore_trailing_singleton_dims(GGMLRunner::compute<float>(get_graph, n_threads, false, false, false), x.dim());
          }
-@@ -788,7 +948,9 @@ namespace Krea2 {
+@@ -788,7 +964,9 @@ namespace Krea2 {
                             *diffusion_params.timesteps,
                             tensor_or_empty(diffusion_params.context),
                             diffusion_params.ref_latents && diffusion_params.ref_image_params.pass_to_dit ? *diffusion_params.ref_latents : empty_ref_latents,
@@ -1263,7 +1293,7 @@ index 69bcaa1..5eeda8d 100644
                  tensor_storage.ne[0]  = tensor_storage.ne[1];
                  tensor_storage.ne[1]  = 1;
 diff --git a/src/stable-diffusion.cpp b/src/stable-diffusion.cpp
-index 7370f6a..025716d 100644
+index 7370f6a..07ca989 100644
 --- a/src/stable-diffusion.cpp
 +++ b/src/stable-diffusion.cpp
 @@ -2516,6 +2516,7 @@ public:
@@ -1300,7 +1330,7 @@ index 7370f6a..025716d 100644
  
          std::vector<float> guidance_schedule = sd::guidance::parse_guidance_schedule(extra_sample_args);
          if (!guidance_schedule.empty() && guidance_schedule.size() != sigmas.size() - 1) {
-@@ -2617,9 +2628,24 @@ public:
+@@ -2617,11 +2628,32 @@ public:
          int64_t last_progress_us     = ggml_time_us();
          SamplePreviewContext preview = prepare_sample_preview_context();
  
@@ -1327,8 +1357,48 @@ index 7370f6a..025716d 100644
 +                                    : init_latent;
          sd::Tensor<float> denoised = x_t;
  
++        // Tiled diffusion support: the step composites against these at canvas size, so the
++        // tiled-diffusion wrapper below needs to substitute per-tile copies. The
++        // parameters are const references, hence these mutable shadows.
++        sd::Tensor<float> active_init_latent  = init_latent;
++        sd::Tensor<float> active_denoise_mask = denoise_mask;
++
          auto denoise = [&](const sd::Tensor<float>& x, float sigma, int step) -> sd::guidance::GuiderOutput {
-@@ -2687,6 +2713,7 @@ public:
+             if (get_cancel_flag() == SD_CANCEL_ALL) {
+                 LOG_DEBUG("cancelling generation");
+@@ -2643,10 +2675,10 @@ public:
+             std::vector<float> timesteps_vec      = base_timesteps_vec;
+             sd::Tensor<float> audio_timesteps_tensor;
+             if (sd_version_is_ltxav(version) && !denoise_mask.empty()) {
+-                timesteps_vec          = process_ltxav_video_timesteps(base_timesteps_vec, init_latent, denoise_mask);
++                timesteps_vec          = process_ltxav_video_timesteps(base_timesteps_vec, active_init_latent, active_denoise_mask);
+                 audio_timesteps_tensor = sd::Tensor<float>({static_cast<int64_t>(base_timesteps_vec.size())}, base_timesteps_vec);
+             } else {
+-                timesteps_vec = process_timesteps(timesteps_vec, init_latent, denoise_mask, step);
++                timesteps_vec = process_timesteps(timesteps_vec, active_init_latent, active_denoise_mask, step);
+             }
+             const std::vector<float>& scaling_timesteps_vec = (sd_version_is_ltxav(version) && !denoise_mask.empty())
+                                                                   ? base_timesteps_vec
+@@ -2660,14 +2692,14 @@ public:
+                 hunyuan_timestep_r_tensor = sd::Tensor<float>::from_vector({sigmas[step + 1]});
+             }
+             sd::Tensor<float> noised_input = x * c_in;
+-            if (!denoise_mask.empty() && (version == VERSION_WAN2_2_TI2V || sd_version_is_ltxav(version) || sd_version_is_lingbot_video(version))) {
+-                noised_input = noised_input * denoise_mask + init_latent * (1.0f - denoise_mask);
++            if (!active_denoise_mask.empty() && (version == VERSION_WAN2_2_TI2V || sd_version_is_ltxav(version) || sd_version_is_lingbot_video(version))) {
++                noised_input = noised_input * active_denoise_mask + active_init_latent * (1.0f - active_denoise_mask);
+             }
+ 
+             if (cache_runtime.spectrum_enabled && cache_runtime.spectrum.should_predict()) {
+                 cache_runtime.spectrum.predict(&denoised);
+-                if (!denoise_mask.empty()) {
+-                    denoised = denoised * denoise_mask + init_latent * (1.0f - denoise_mask);
++                if (!active_denoise_mask.empty()) {
++                    denoised = denoised * active_denoise_mask + active_init_latent * (1.0f - active_denoise_mask);
+                 }
+                 if (sd_should_preview_denoised() && preview.callback != nullptr) {
+                     if (step % sd_get_preview_interval() == 0) {
+@@ -2687,6 +2719,7 @@ public:
              }
  
              sd::Tensor<float> cond_out;
@@ -1336,7 +1406,7 @@ index 7370f6a..025716d 100644
              sd::Tensor<float> uncond_out;
              sd::Tensor<float> img_uncond_out;
              sd_sample::SampleStepCacheDispatcher step_cache(cache_runtime, step, sigma);
-@@ -2699,6 +2726,9 @@ public:
+@@ -2699,6 +2732,9 @@ public:
              step_guidance_input.step          = step;
              step_guidance_input.schedule_size = sigmas.size();
              bool is_skiplayer_step            = skip_layer_guidance.is_enabled_for_step(step_guidance_input);
@@ -1346,7 +1416,7 @@ index 7370f6a..025716d 100644
  
              compute_sample_controls(control_image,
                                      noised_input,
-@@ -2715,11 +2745,15 @@ public:
+@@ -2715,11 +2751,15 @@ public:
                                       const sd::Tensor<float>* c_concat_override                 = nullptr,
                                       const std::vector<int>* local_skip_layers                  = nullptr,
                                       const std::vector<sd::Tensor<float>>* ref_latents_override = nullptr,
@@ -1363,7 +1433,7 @@ index 7370f6a..025716d 100644
  
                  if (sd_version_is_unet(version)) {
                      int nvf = -1;
-@@ -2781,7 +2815,7 @@ public:
+@@ -2781,7 +2821,7 @@ public:
                  }
  
                  sd::Tensor<float> cached_output;
@@ -1372,7 +1442,7 @@ index 7370f6a..025716d 100644
                      return std::move(cached_output);
                  }
  
-@@ -2795,7 +2829,9 @@ public:
+@@ -2795,7 +2835,9 @@ public:
                      return sd::Tensor<float>();
                  }
  
@@ -1383,7 +1453,7 @@ index 7370f6a..025716d 100644
                  return output_opt;
              };
  
-@@ -2812,11 +2848,31 @@ public:
+@@ -2812,11 +2854,31 @@ public:
                  }
              }
  
@@ -1416,7 +1486,7 @@ index 7370f6a..025716d 100644
              if (!uncond.empty()) {
                  if (!step_cache.is_step_skipped()) {
                      compute_sample_controls(control_image,
-@@ -2834,7 +2890,9 @@ public:
+@@ -2834,7 +2896,9 @@ public:
                                             uncond.c_concat.empty() ? nullptr : &uncond.c_concat,
                                             uncond_skip_layers,
                                             nullptr,
@@ -1427,7 +1497,7 @@ index 7370f6a..025716d 100644
                  if (uncond_out.empty()) {
                      return {};
                  }
-@@ -2844,7 +2902,9 @@ public:
+@@ -2844,7 +2908,9 @@ public:
                                                 img_uncond.c_concat.empty() ? nullptr : &img_uncond.c_concat,
                                                 nullptr,
                                                 uncond_without_ref_latents ? &empty_ref_latents : nullptr,
@@ -1438,7 +1508,7 @@ index 7370f6a..025716d 100644
                  if (img_uncond_out.empty()) {
                      return {};
                  }
-@@ -2861,6 +2921,10 @@ public:
+@@ -2861,6 +2927,10 @@ public:
                  return {};
              }
  
@@ -1449,7 +1519,225 @@ index 7370f6a..025716d 100644
              if (is_skiplayer_step && slg_scale != 0.0f) {
                  LOG_DEBUG("Skipping layers at step %d\n", step);
                  if (!step_cache.is_step_skipped()) {
-@@ -3224,6 +3288,30 @@ public:
+@@ -2889,8 +2959,8 @@ public:
+             if (cache_runtime.spectrum_enabled) {
+                 cache_runtime.spectrum.update(denoised);
+             }
+-            if (!denoise_mask.empty()) {
+-                denoised = denoised * denoise_mask + init_latent * (1.0f - denoise_mask);
++            if (!active_denoise_mask.empty()) {
++                denoised = denoised * active_denoise_mask + active_init_latent * (1.0f - active_denoise_mask);
+             }
+             if (sd_should_preview_denoised() && preview.callback != nullptr) {
+                 if (step % sd_get_preview_interval() == 0) {
+@@ -2902,7 +2972,205 @@ public:
+             return output;
+         };
+ 
+-        auto x0_opt = sample_k_diffusion(method, denoise, x_t, sigmas, sampler_rng, eta, is_flow_denoiser, extra_sample_args, denoiser);
++        // MultiDiffusion style latent tile fusion. The latent is split into
++        // overlapping tiles, each is denoised by the real callback, and the
++        // results are fused under a raised cosine weight before the step
++        // returns. Because fusion happens every step, neighbouring tiles
++        // cannot diverge, which is what a pixel blend of independently finished
++        // tiles cannot fix.
++        //
++        // Per request via sample args, with the environment as a fallback so a
++        // whole server can be put into one configuration for a comparison run.
++        //   tiled_diffusion_tile_width   latent-space tile width, 0 disables
++        //   tiled_diffusion_tile_height  latent-space tile height, 0 disables
++        //   tiled_diffusion_overlap      latent-space overlap
++        //   tiled_diffusion_rope_offset  label each tile with its true canvas
++        //                                position rather than the origin
++        //
++        // The two axes are independent because the caller picks a GRID, and a
++        // grid over a canvas that is not square produces tiles that are not
++        // square either.
++        const char* tile_width_env  = getenv("KREA_TILED_DIFFUSION_TILE_WIDTH");
++        const char* tile_height_env = getenv("KREA_TILED_DIFFUSION_TILE_HEIGHT");
++        const char* overlap_env     = getenv("KREA_TILED_DIFFUSION_OVERLAP");
++        const char* rope_env        = getenv("KREA_TILED_DIFFUSION_ROPE_OFFSET");
++        int tile_width_latents      = tile_width_env == nullptr ? 0 : atoi(tile_width_env);
++        int tile_height_latents     = tile_height_env == nullptr ? 0 : atoi(tile_height_env);
++        int tile_overlap_latents    = overlap_env == nullptr ? 16 : atoi(overlap_env);
++        // Off by default: labelling each tile with its true canvas position
++        // measured slightly worse for coherence than letting every tile claim
++        // the origin, so it stays available but is not the default.
++        bool tile_rope_offset = rope_env != nullptr && atoi(rope_env) != 0;
++        for (const auto& [key, value] : parse_key_value_args(extra_sample_args, "sample arg")) {
++            try {
++                if (key == "tiled_diffusion_tile_width") {
++                    tile_width_latents = std::stoi(value);
++                } else if (key == "tiled_diffusion_tile_height") {
++                    tile_height_latents = std::stoi(value);
++                } else if (key == "tiled_diffusion_overlap") {
++                    tile_overlap_latents = std::stoi(value);
++                } else if (key == "tiled_diffusion_rope_offset") {
++                    tile_rope_offset = std::stoi(value) != 0;
++                }
++            } catch (...) {
++                LOG_WARN("ignoring invalid %s value '%s'", key.c_str(), value.c_str());
++            }
++        }
++
++        denoise_cb_t sampling_callback = denoise;
++        if (tile_width_latents > 0 && tile_height_latents > 0 && tile_overlap_latents > 0
++            && tile_overlap_latents < tile_width_latents
++            && tile_overlap_latents < tile_height_latents) {
++            LOG_INFO("tiled diffusion: latent tile %dx%d, overlap %d, rope offsets %s",
++                     tile_width_latents, tile_height_latents, tile_overlap_latents,
++                     tile_rope_offset ? "on" : "off");
++            sampling_callback = [&denoise, &active_init_latent, &active_denoise_mask,
++                                 tile_width_latents, tile_height_latents,
++                                 tile_overlap_latents, tile_rope_offset](
++                                    const sd::Tensor<float>& x, float sigma,
++                                    int step) -> sd::guidance::GuiderOutput {
++                const int64_t width  = x.shape()[0];
++                const int64_t height = x.shape()[1];
++                int64_t planes       = 1;
++                for (size_t dim = 2; dim < x.shape().size(); ++dim) {
++                    planes *= x.shape()[dim];
++                }
++                if (width <= tile_width_latents && height <= tile_height_latents) {
++                    return denoise(x, sigma, step);
++                }
++
++                auto tile_start_positions = [&](int64_t length, int64_t tile_length) {
++                    std::vector<int64_t> starts;
++                    if (length <= tile_length) {
++                        starts.push_back(0);
++                        return starts;
++                    }
++                    const int64_t stride = tile_length - tile_overlap_latents;
++                    const int64_t count  = (length - tile_length + stride - 1) / stride + 1;
++                    for (int64_t index = 0; index < count; ++index) {
++                        starts.push_back(count == 1 ? 0
++                                                    : (index * (length - tile_length)) / (count - 1));
++                    }
++                    return starts;
++                };
++                const std::vector<int64_t> column_starts = tile_start_positions(width, tile_width_latents);
++                const std::vector<int64_t> row_starts    = tile_start_positions(height, tile_height_latents);
++
++                // Raised cosine, so a tile contributes least at its edges and
++                // neighbours sum smoothly. Mixture of Diffusers uses the same idea.
++                auto taper = [&](int64_t position, int64_t tile_length) {
++                    const double centred = (position + 0.5) / (double)tile_length;
++                    return 0.0001 + 0.5 * (1.0 - std::cos(2.0 * M_PI * centred));
++                };
++
++                // The inner callback composites against init_latent and
++                // denoise_mask at full canvas size, so a tile has to be given
++                // per-tile copies. They are captured by reference, so this
++                // swaps them per tile and puts them back.
++                auto crop_to_tile = [&](sd::Tensor<float>& whole,
++                                          int64_t column_start, int64_t row_start,
++                                          int64_t tile_width, int64_t tile_height) {
++                    if (whole.empty()) {
++                        return sd::Tensor<float>();
++                    }
++                    int64_t whole_planes = 1;
++                    for (size_t dim = 2; dim < whole.shape().size(); ++dim) {
++                        whole_planes *= whole.shape()[dim];
++                    }
++                    std::vector<int64_t> cropped_shape = whole.shape();
++                    cropped_shape[0]                   = tile_width;
++                    cropped_shape[1]                   = tile_height;
++                    sd::Tensor<float> cropped(cropped_shape);
++                    for (int64_t plane = 0; plane < whole_planes; ++plane) {
++                        for (int64_t row = 0; row < tile_height; ++row) {
++                            for (int64_t column = 0; column < tile_width; ++column) {
++                                cropped[column + tile_width * (row + tile_height * plane)] =
++                                    whole[(column_start + column) + width * ((row_start + row) + height * plane)];
++                            }
++                        }
++                    }
++                    return cropped;
++                };
++
++                std::vector<double> accumulated((size_t)(width * height * planes), 0.0);
++                std::vector<double> accumulated_weight((size_t)(width * height), 0.0);
++                sd::Tensor<float> whole_init_latent  = active_init_latent;
++                sd::Tensor<float> whole_denoise_mask = active_denoise_mask;
++                int tiles_done = 0;
++                for (int64_t row_start : row_starts) {
++                    for (int64_t column_start : column_starts) {
++                        const int64_t tile_width  = std::min<int64_t>(tile_width_latents, width - column_start);
++                        const int64_t tile_height = std::min<int64_t>(tile_height_latents, height - row_start);
++                        std::vector<int64_t> tile_shape = x.shape();
++                        tile_shape[0]                   = tile_width;
++                        tile_shape[1]                   = tile_height;
++                        sd::Tensor<float> tile(tile_shape);
++                        for (int64_t plane = 0; plane < planes; ++plane) {
++                            for (int64_t row = 0; row < tile_height; ++row) {
++                                for (int64_t column = 0; column < tile_width; ++column) {
++                                    tile[column + tile_width * (row + tile_height * plane)] =
++                                        x[(column_start + column) + width * ((row_start + row) + height * plane)];
++                                }
++                            }
++                        }
++
++                        active_init_latent  = crop_to_tile(whole_init_latent, column_start, row_start,
++                                                             tile_width, tile_height);
++                        active_denoise_mask = crop_to_tile(whole_denoise_mask, column_start, row_start,
++                                                             tile_width, tile_height);
++                        // Tell the model where this tile actually sits, in token
++                        // units, instead of letting every tile claim the origin.
++                        // Krea2's patch size is 2, so a latent offset halves.
++                        Krea2::krea2_tiled_tile_row_offset_tokens() =
++                            tile_rope_offset ? (int)(row_start / 2) : 0;
++                        Krea2::krea2_tiled_tile_col_offset_tokens() =
++                            tile_rope_offset ? (int)(column_start / 2) : 0;
++                        auto tile_output  = denoise(tile, sigma, step);
++                        Krea2::krea2_tiled_tile_row_offset_tokens() = 0;
++                        Krea2::krea2_tiled_tile_col_offset_tokens() = 0;
++                        active_init_latent  = whole_init_latent;
++                        active_denoise_mask = whole_denoise_mask;
++                        if (tile_output.pred.empty()) {
++                            return {};
++                        }
++                        for (int64_t row = 0; row < tile_height; ++row) {
++                            for (int64_t column = 0; column < tile_width; ++column) {
++                                const double weight = taper(column, tile_width) * taper(row, tile_height);
++                                const int64_t canvas_pixel =
++                                    (column_start + column) + width * (row_start + row);
++                                accumulated_weight[(size_t)canvas_pixel] += weight;
++                                for (int64_t plane = 0; plane < planes; ++plane) {
++                                    accumulated[(size_t)(canvas_pixel + width * height * plane)] +=
++                                        weight * tile_output.pred[column + tile_width * (row + tile_height * plane)];
++                                }
++                            }
++                        }
++                        ++tiles_done;
++                    }
++                }
++                if (step == 1 || step == -1) {
++                    LOG_INFO("tiled diffusion: %d tiles per step "
++                             "(%zu x %zu) over a %ldx%ld latent",
++                             tiles_done, column_starts.size(), row_starts.size(),
++                             (long)width, (long)height);
++                }
++
++                sd::guidance::GuiderOutput fused;
++                fused.pred = sd::Tensor<float>(x.shape());
++                for (int64_t plane = 0; plane < planes; ++plane) {
++                    for (int64_t pixel = 0; pixel < width * height; ++pixel) {
++                        const double weight = accumulated_weight[(size_t)pixel];
++                        fused.pred[pixel + width * height * plane] =
++                            (float)(weight > 0.0
++                                        ? accumulated[(size_t)(pixel + width * height * plane)] / weight
++                                        : 0.0);
++                    }
++                }
++                return fused;
++            };
++        }
++
++        auto x0_opt = sample_k_diffusion(method, sampling_callback, x_t, sigmas, sampler_rng, eta, is_flow_denoiser, extra_sample_args, denoiser);
+         if (x0_opt.empty()) {
+             LOG_ERROR("Diffusion model sampling failed");
+             if (control_net) {
+@@ -3224,6 +3492,30 @@ public:
                  if (!parse_strict_int(value, params.vlm_min_size)) {
                      LOG_WARN("ignoring invalid reference image arg '%s=%s'", key.c_str(), value.c_str());
                  }
@@ -1480,7 +1768,7 @@ index 7370f6a..025716d 100644
              } else if (key != "preset" && key != "vlm_size") {
                  LOG_WARN("ignoring unknown reference image arg '%s'", key.c_str());
              }
-@@ -3244,6 +3332,15 @@ public:
+@@ -3244,6 +3536,15 @@ public:
          if (params.force_ref_timestep_zero && !sd_version_is_krea2(version)) {
              LOG_WARN("force_ref_timestep_zero is only supported by Krea2 architecture for now");
          }
@@ -1496,7 +1784,7 @@ index 7370f6a..025716d 100644
          return params;
      }
  };
-@@ -3546,7 +3643,13 @@ void sd_hires_params_init(sd_hires_params_t* hires_params) {
+@@ -3546,7 +3847,13 @@ void sd_hires_params_init(sd_hires_params_t* hires_params) {
      hires_params->target_height       = 0;
      hires_params->steps               = 0;
      hires_params->denoising_strength  = 0.7f;
@@ -1510,7 +1798,7 @@ index 7370f6a..025716d 100644
      hires_params->custom_sigmas       = nullptr;
      hires_params->custom_sigmas_count = 0;
  }
-@@ -3669,6 +3772,12 @@ void sd_sample_params_init(sd_sample_params_t* sample_params) {
+@@ -3669,6 +3976,12 @@ void sd_sample_params_init(sd_sample_params_t* sample_params) {
      sample_params->custom_sigmas               = nullptr;
      sample_params->custom_sigmas_count         = 0;
      sample_params->flow_shift                  = INFINITY;
@@ -1523,7 +1811,7 @@ index 7370f6a..025716d 100644
      sample_params->extra_sample_args           = nullptr;
  }
  
-@@ -3686,6 +3795,11 @@ char* sd_sample_params_to_str(const sd_sample_params_t* sample_params) {
+@@ -3686,6 +3999,11 @@ char* sd_sample_params_to_str(const sd_sample_params_t* sample_params) {
               "slg.layer_start: %.2f, "
               "slg.layer_end: %.2f, "
               "slg.scale: %.2f, "
@@ -1535,7 +1823,7 @@ index 7370f6a..025716d 100644
               "scheduler: %s, "
               "sample_method: %s, "
               "sample_steps: %d, "
-@@ -3702,6 +3816,11 @@ char* sd_sample_params_to_str(const sd_sample_params_t* sample_params) {
+@@ -3702,6 +4020,11 @@ char* sd_sample_params_to_str(const sd_sample_params_t* sample_params) {
               sample_params->guidance.slg.layer_start,
               sample_params->guidance.slg.layer_end,
               sample_params->guidance.slg.scale,
@@ -1547,7 +1835,7 @@ index 7370f6a..025716d 100644
               sd_scheduler_name(sample_params->scheduler),
               sd_sample_method_name(sample_params->sample_method),
               sample_params->sample_steps,
-@@ -3718,10 +3837,12 @@ void sd_img_gen_params_init(sd_img_gen_params_t* sd_img_gen_params) {
+@@ -3718,10 +4041,12 @@ void sd_img_gen_params_init(sd_img_gen_params_t* sd_img_gen_params) {
      sd_sample_params_init(&sd_img_gen_params->sample_params);
      sd_img_gen_params->clip_skip           = -1;
      sd_img_gen_params->ref_images_count    = 0;
@@ -1561,7 +1849,7 @@ index 7370f6a..025716d 100644
      sd_img_gen_params->seed                = -1;
      sd_img_gen_params->batch_count         = 1;
      sd_img_gen_params->control_strength    = 0.9f;
-@@ -4401,6 +4522,7 @@ struct ImageGenerationLatents {
+@@ -4401,6 +4726,7 @@ struct ImageGenerationLatents {
      sd::Tensor<float> video_positions;
      sd::Tensor<float> control_image;
      std::vector<sd::Tensor<float>> ref_images;
@@ -1569,7 +1857,7 @@ index 7370f6a..025716d 100644
      std::vector<sd::Tensor<float>> ref_latents;
      std::vector<sd::Tensor<float>> reference_audio_latents;
      std::vector<MiniMaxH3ReferenceBlock> minimax_reference_blocks;
-@@ -5061,6 +5183,14 @@ static std::optional<ImageGenerationLatents> prepare_image_generation_latents(sd
+@@ -5061,6 +5387,14 @@ static std::optional<ImageGenerationLatents> prepare_image_generation_latents(sd
                                                            image_channels));
      }
  
@@ -1584,7 +1872,7 @@ index 7370f6a..025716d 100644
      if (ref_images.empty() && sd_version_is_unet_edit(sd_ctx->sd->version)) {
          LOG_WARN("This model needs at least one reference image; using an empty reference");
          ref_images.push_back(sd::zeros<float>({request->width, request->height, image_channels, 1}));
-@@ -5072,9 +5202,15 @@ static std::optional<ImageGenerationLatents> prepare_image_generation_latents(sd
+@@ -5072,9 +5406,15 @@ static std::optional<ImageGenerationLatents> prepare_image_generation_latents(sd
          LOG_INFO("EDIT mode");
      }
  
@@ -1601,7 +1889,7 @@ index 7370f6a..025716d 100644
              continue;
          }
          sd::Tensor<float> ref_latent;
-@@ -5096,6 +5232,21 @@ static std::optional<ImageGenerationLatents> prepare_image_generation_latents(sd
+@@ -5096,6 +5436,21 @@ static std::optional<ImageGenerationLatents> prepare_image_generation_latents(sd
              vae_height = round(vae_height / factor) * factor;
              vae_width  = round(vae_width / factor) * factor;
  
@@ -1623,7 +1911,7 @@ index 7370f6a..025716d 100644
              auto resized_ref_img = sd::ops::interpolate(ref_images[i],
                                                          {static_cast<int>(vae_width),
                                                           static_cast<int>(vae_height),
-@@ -5198,6 +5349,7 @@ static std::optional<ImageGenerationLatents> prepare_image_generation_latents(sd
+@@ -5198,6 +5553,7 @@ static std::optional<ImageGenerationLatents> prepare_image_generation_latents(sd
      latents.img_uncond_concat_latent = std::move(img_uncond_concat_latent);
      latents.control_image            = std::move(control_image_tensor);
      latents.ref_images               = std::move(ref_images);
@@ -1631,7 +1919,7 @@ index 7370f6a..025716d 100644
      latents.ref_latents              = std::move(ref_latents);
  
      if (sd_version_is_inpaint(sd_ctx->sd->version)) {
-@@ -5227,6 +5379,7 @@ static std::optional<ImageGenerationEmbeds> prepare_image_generation_embeds(sd_c
+@@ -5227,6 +5583,7 @@ static std::optional<ImageGenerationEmbeds> prepare_image_generation_embeds(sd_c
      if (ref_image_params.pass_to_vlm) {
          condition_params.ref_images = &latents->ref_images;
      }
@@ -1639,7 +1927,7 @@ index 7370f6a..025716d 100644
  
      condition_params.ref_image_params = ref_image_params;
  
-@@ -5309,6 +5462,60 @@ static std::optional<ImageGenerationEmbeds> prepare_image_generation_embeds(sd_c
+@@ -5309,6 +5666,60 @@ static std::optional<ImageGenerationEmbeds> prepare_image_generation_embeds(sd_c
      return embeds;
  }
  
@@ -1700,7 +1988,7 @@ index 7370f6a..025716d 100644
  static sd_image_t* decode_image_outputs(sd_ctx_t* sd_ctx,
                                          const GenerationRequest& request,
                                          const std::vector<sd::Tensor<float>>& final_latents,
-@@ -5600,6 +5807,27 @@ static std::vector<float> make_hires_sigma_schedule(sd_ctx_t* sd_ctx,
+@@ -5600,6 +6011,27 @@ static std::vector<float> make_hires_sigma_schedule(sd_ctx_t* sd_ctx,
                                sigmas.end());
  }
  
@@ -1728,7 +2016,7 @@ index 7370f6a..025716d 100644
  SD_API bool generate_image(sd_ctx_t* sd_ctx,
                             const sd_img_gen_params_t* sd_img_gen_params,
                             sd_image_t** images_out,
-@@ -5698,6 +5926,7 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
+@@ -5698,6 +6130,7 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
                                                     latents.control_image,
                                                     request.control_strength,
                                                     request.guidance,
@@ -1736,7 +2024,7 @@ index 7370f6a..025716d 100644
                                                     plan.eta,
                                                     request.shifted_timestep,
                                                     plan.sample_method,
-@@ -5734,11 +5963,69 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
+@@ -5734,11 +6167,69 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
          return false;
      }
  
@@ -1806,7 +2094,7 @@ index 7370f6a..025716d 100644
          LOG_INFO("hires fix: upscaling to %dx%d", request.hires.target_width, request.hires.target_height);
  
          std::unique_ptr<UpscalerGGML> hires_upscaler;
-@@ -5777,6 +6064,9 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
+@@ -5777,6 +6268,9 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
                   hires_sigma_sched.size(),
                   request.hires.custom_sigmas_count > 0 ? ", custom_sigmas=true" : "");
  
@@ -1816,7 +2104,7 @@ index 7370f6a..025716d 100644
          std::vector<sd::Tensor<float>> hires_final_latents;
          int64_t hires_denoise_start = ggml_time_ms();
          for (int b = 0; b < (int)final_latents.size(); b++) {
-@@ -5819,20 +6109,23 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
+@@ -5819,20 +6313,23 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
                                                              latents.control_image,
                                                              request.control_strength,
                                                              request.guidance,
@@ -1842,7 +2130,7 @@ index 7370f6a..025716d 100644
              int64_t hires_sample_end   = ggml_time_ms();
              if (!x_0.empty()) {
                  LOG_INFO("hires sampling %d/%d completed, taking %.2fs",
-@@ -5861,6 +6154,24 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
+@@ -5861,6 +6358,24 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
          return false;
      }
  
@@ -1867,7 +2155,7 @@ index 7370f6a..025716d 100644
      sd_ctx->sd->lora_stat();
  
      int64_t t1 = ggml_time_ms();
-@@ -6952,6 +7263,7 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
+@@ -6952,6 +7467,7 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
                                                             sd::Tensor<float>(),
                                                             0.f,
                                                             request.high_noise_guidance,
@@ -1875,7 +2163,7 @@ index 7370f6a..025716d 100644
                                                             plan.high_noise_eta,
                                                             request.shifted_timestep,
                                                             plan.high_noise_sample_method,
-@@ -6994,6 +7306,7 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
+@@ -6994,6 +7510,7 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
                                                          sd::Tensor<float>(),
                                                          0.f,
                                                          sd_vid_gen_params->sample_params.guidance,
@@ -1883,7 +2171,7 @@ index 7370f6a..025716d 100644
                                                          plan.eta,
                                                          sd_vid_gen_params->sample_params.shifted_timestep,
                                                          plan.sample_method,
-@@ -7132,6 +7445,7 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
+@@ -7132,6 +7649,7 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
                                              sd::Tensor<float>(),
                                              0.f,
                                              sd_vid_gen_params->sample_params.guidance,
