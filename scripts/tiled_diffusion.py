@@ -14,14 +14,18 @@ portrait instead of forcing square tiles onto it and wasting most of their area
 on redundant overlap.
 
 One request renders the main pass and then the hires pass, and both read the same
-sample args. The runtime denoises a pass whole when it fits inside a single tile,
-so a small main pass under a large hires target tiles only where it has to. That
-is why the args are decided by the LARGEST canvas the request will reach.
+sample args, so the args are decided by the LARGEST canvas the request will
+reach. Exactly one stage is tiled: the runtime refuses tiling on the primary pass
+whenever a hires pass follows, because that output is resampled by the hires pass
+and tiling it spends evaluations on a result about to be replaced. The primary
+pass tiles only when it is the whole job.
 
 The UI works in pixels because the rest of the app does. The runtime works in the
 latent, so every size crosses this module and is divided by LATENT_SCALE.
 """
 from __future__ import annotations
+
+from hires_staging import renders_hires_from_existing_source
 
 LATENT_SCALE = 8
 
@@ -29,9 +33,10 @@ TILED_DIFFUSION_GRIDS = ["1x1", "1x2", "2x1", "2x2", "2x3", "3x2", "3x3"]
 
 DEFAULT_TILED_DIFFUSION_MODE = "off"
 DEFAULT_TILED_DIFFUSION_GRID = "2x2"
-# Labelling each tile with its true canvas position measured slightly worse for
-# coherence than letting every tile claim the origin.
-DEFAULT_TILED_DIFFUSION_ROPE_OFFSET_MODE = "off"
+# Labelling each tile with its true canvas position produces the better image.
+# An earlier comparison put it slightly behind letting every tile claim the
+# origin; that was measured before the grid and denoise this is used at.
+DEFAULT_TILED_DIFFUSION_ROPE_OFFSET_MODE = "on"
 DEFAULT_TILED_DIFFUSION_OVERLAP_PIXELS = 128
 
 # Below one latent cell of overlap the fusion has nothing to blend across, so a
@@ -94,6 +99,29 @@ def largest_canvas_the_request_renders(p: dict) -> tuple[int, int]:
         return width, height
     return (max(width, int(p.get("hires_width", 0))),
             max(height, int(p.get("hires_height", 0))))
+
+
+def stage_that_tiled_diffusion_applies_to(p: dict) -> str:
+    """Which stage is tiled: "hires", "primary", or "" for neither.
+
+    Only one stage is ever tiled. The hires stage takes it whenever it runs,
+    because the primary stage's output is resampled by the hires pass and tiling
+    it spends model evaluations on a result that is about to be replaced. The
+    primary stage tiles only when it is the whole job.
+    """
+    columns, rows = tile_columns_and_rows(p)
+    if str(p.get("tiled_diffusion", DEFAULT_TILED_DIFFUSION_MODE)) != "on":
+        return ""
+    if columns * rows <= 1:
+        return ""
+    return "hires" if p.get("hires") else "primary"
+
+
+def describe_which_stages_run(p: dict) -> str:
+    """Which stages this job will actually sample, for the UI to state plainly."""
+    primary_state = ("skipped" if renders_hires_from_existing_source(p) else "active")
+    hires_state = "active" if p.get("hires") else "disabled"
+    return f"primary stage: {primary_state}, hires stage: {hires_state}"
 
 
 def renders_by_tiled_diffusion(p: dict, canvas_width: int, canvas_height: int) -> bool:

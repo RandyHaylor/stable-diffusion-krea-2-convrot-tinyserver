@@ -124,9 +124,18 @@ Tiled diffusion is the only tiling, and it is chosen as a GRID
     - The notice reports the DERIVED tile size and the overlap that actually
       results, since rounding moves both away from the requested overlap
     - Decided by the LARGEST canvas the request reaches, because one request
-      renders both passes off the same sample args. The runtime denoises a pass
-      whole when it fits in one tile, so the main pass is untouched while the
-      hires pass tiles
+      renders both passes off the same sample args
+    - Exactly ONE stage is ever tiled, enforced in the runtime rather than left
+      to the geometry. `sample()` takes `tiled_diffusion_permitted` and the main
+      pass is given `!request.hires.enabled`, so a primary pass under a hires
+      pass CANNOT tile whatever the tile size works out to
+    - The rule exists because sizing alone did not deliver it. The derived tile
+      comes from the hires canvas, and at a 3x3 grid it lands SMALLER than the
+      main latent: an 832x1216 main pass under a 1248x1824 hires target got a
+      696x952 tile and split itself 2x2, spending four evaluations on a pass the
+      hires stage was about to resample
+    - With the hires pass off, the single pass tiles normally. It is the only
+      pass, so there is nothing downstream to make its tiling redundant
     - `scripts/tiled_diffusion.py` is pure and tested; the UI is in PIXELS and
       that module divides by 8
 
@@ -159,15 +168,16 @@ The steps setting means steps EXECUTED, and the app scales to make that true
     - Every measurement taken before this was understood ran 2-3 steps per
       tile while being labelled 8
 
-RoPE offsets per tile measured WORSE, and are off by default
+RoPE offsets per tile are ON by default
     - `tiled_diffusion_rope_offset = on` gives each tile position ids at its
       true canvas place instead of every tile claiming the origin
-    - The theory was that fusing predictions made under contradictory coordinate
-      assumptions is what hurt. It did not survive testing
-    - At 2-3 effective steps the offsets looked like a clear win. At 8 real steps
-      the plain origin-labelled tiles read better for coherence, so the gain
-      was the step count, not the positions
-    - Kept behind the setting for comparison, never on by default
+    - Judged the better image by the user at a 3x3 grid with 512px overlap and a
+      denoise around 0.1, which is where this feature is actually used
+    - An earlier comparison put them slightly BEHIND origin-labelled tiles for
+      coherence at 8 real steps on a 2x2 grid, and that is what the default used
+      to be set from. It did not hold at the settings above
+    - Both readings are visual judgements, not a metric. Judge by the crops: a
+      seam-steepness metric rates a ghosted result BETTER, so it cannot settle it
 
 Tiles must overlap, and an exact doubling does not overlap on its own
     - Two 1024px tiles reach 2048px only by abutting, leaving nothing to blend

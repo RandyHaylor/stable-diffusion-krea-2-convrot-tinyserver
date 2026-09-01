@@ -210,6 +210,10 @@ button.danger{background:#49252a;border-color:#813942}
 
 <div class="grid">
 <section class="panel">
+  <div id="stageActivityNotice" class="hires-variation-notice">
+    <div id="stageTilingLine" hidden></div>
+    <div id="stageRunningLine"></div>
+  </div>
   <label for="prompt">Prompt</label>
   <textarea id="prompt" placeholder="Describe the image..."></textarea>
 
@@ -288,10 +292,10 @@ button.danger{background:#49252a;border-color:#813942}
 
     <div class="fields two">
       <div><label for="hires_upscaler">Hires upscaler</label><div class="combo" data-field="hires_upscaler"></div></div>
-      <div><label for="tiled_diffusion" title="Denoise the hires pass as overlapping latent tiles fused every step, instead of one attention sequence over the whole canvas. Never leaves the latent and never runs more than one request: tiles are fused inside each step, so neighbours cannot drift apart. This is what makes a target too large for one attention sequence reachable. A pass that fits inside a single tile is denoised whole, so the main pass is untouched while the hires pass tiles.">Tiled diffusion</label><div class="combo" data-field="tiled_diffusion"></div></div>
+      <div><label for="tiled_diffusion" title="Denoise the hires pass as overlapping latent tiles fused every step, instead of one attention sequence over the whole canvas. Never leaves the latent and never runs more than one request: tiles are fused inside each step, so neighbours cannot drift apart. This is what makes a target too large for one attention sequence reachable. Exactly one stage is tiled: the hires stage whenever it runs, otherwise the primary stage. A primary pass under a hires pass is never tiled, since the hires pass resamples it.">Tiled diffusion</label><div class="combo" data-field="tiled_diffusion"></div></div>
       <div><label for="tiled_diffusion_grid" title="How many tiles the canvas is split into, as columns x rows. Tile count is what decides the cost of a step and what the ghosting guidance is keyed on, so it is what you choose; the tile size follows from the grid, the overlap and the target, and is reported below. A 1x1 grid denoises the canvas whole.">Tiled diffusion grid</label><div class="combo" data-field="tiled_diffusion_grid"></div></div>
       <div><label for="tiled_diffusion_overlap" title="How far neighbouring tiles share, in pixels. The per-step fusion weights each tile by a raised cosine, so this band is where neighbours blend. Wider costs more tiles to cover the same canvas.">Tiled diffusion overlap</label><div class="combo" data-field="tiled_diffusion_overlap"></div></div>
-      <div><label for="tiled_diffusion_rope_offset" title="Give each tile position ids at its true place in the canvas rather than letting every tile claim the origin. Measured slightly worse for coherence at eight real steps, so it is off by default and kept for comparison.">Tiled diffusion RoPE offsets</label><div class="combo" data-field="tiled_diffusion_rope_offset"></div></div>
+      <div><label for="tiled_diffusion_rope_offset" title="Give each tile position ids at its true place in the canvas rather than letting every tile claim the origin. On by default: it produces the better image. An earlier comparison at eight real steps put it slightly behind, which did not hold up at the grid and denoise this is used at.">Tiled diffusion RoPE offsets</label><div class="combo" data-field="tiled_diffusion_rope_offset"></div></div>
     </div>
     <div id="tiledDiffusionNotice" class="hires-variation-notice" hidden></div>
   </div>
@@ -414,7 +418,7 @@ const COMBO_FIELDS = {
   tiled_diffusion:            {value:'off', options:['off','on']},
   tiled_diffusion_grid:       {value:'2x2', options:['1x1','1x2','2x1','2x2','2x3','3x2','3x3']},
   tiled_diffusion_overlap:    {value:'128', step:8, options:['64','96','128','192','256']},
-  tiled_diffusion_rope_offset:{value:'off', options:['off','on']},
+  tiled_diffusion_rope_offset:{value:'on', options:['off','on']},
 };
 const NUMERIC_FIELDS = ['seed','steps','cfg','flow_shift','pag_scale','pag_start','pag_end','hires_steps','hires_denoise','vae_tile_size','img2img_denoise','img2img_noise_multiplier','grounding_px','beta_schedule_alpha','beta_schedule_beta','hires_noise_multiplier','tiled_diffusion_overlap'];
 const TEXT_FIELDS = ['sampler','scheduler','hires_upscaler','extra_sample_args','pag_layers','fit_mode',
@@ -826,9 +830,12 @@ function hiresSettingsVaryFromMain(){
 }
 
 function refreshHiresVariationNotice(){
+  // The variation still decides that the job pauses; what it no longer costs is a
+  // first stage running under different settings, because there is no first stage
+  // to run when the source stands in for it.
   const notice = $('hiresVariationNotice');
   if (!notice) return;
-  notice.hidden = !hiresSettingsVaryFromMain();
+  notice.hidden = !hiresSettingsVaryFromMain() || sendsSourceStraightToHiresStage();
 }
 
 function sendsSourceStraightToHiresStage(){
@@ -938,8 +945,27 @@ function refreshTiledDiffusionNotice(){
     `Each step costs ${columns * rows} model evaluations.`;
 }
 
+function refreshStageActivityNotice(){
+  // Mirrors stage_that_tiled_diffusion_applies_to and describe_which_stages_run.
+  // Only one stage is ever tiled: the hires stage takes it whenever it runs,
+  // because tiling a primary pass the hires pass resamples buys nothing.
+  const tilingLine = $('stageTilingLine');
+  const runningLine = $('stageRunningLine');
+  if (!tilingLine || !runningLine) return;
+  const hiresEnabled = $('hires').checked;
+  const [columns, rows] = ($('tiled_diffusion_grid').value || '2x2').split('x').map(Number);
+  const tilingStage = ($('tiled_diffusion').value === 'on' && columns * rows > 1)
+    ? (hiresEnabled ? 'hires' : 'primary') : '';
+  tilingLine.hidden = tilingStage === '';
+  tilingLine.textContent = `Tiled diffusion enabled for ${tilingStage} stage`;
+  const primaryState = sendsSourceStraightToHiresStage() ? 'skipped' : 'active';
+  runningLine.textContent =
+    `primary stage: ${primaryState}, hires stage: ${hiresEnabled ? 'active' : 'disabled'}`;
+}
+
 function refreshNoticesThatDependOnStageSettings(){
   refreshFirstStageFieldDimming();
+  refreshStageActivityNotice();
   refreshTiledDiffusionNotice();
   refreshHiresVariationNotice();
   refreshReferenceFidelityVramNotices();
@@ -1061,6 +1087,10 @@ function formatJobDetails(params){
       ? `${p.tiled_diffusion_grid || '2x2'} grid, ${p.tiled_diffusion_overlap ?? 128}px overlap`
         + (p.tiled_diffusion_rope_offset === 'on' ? ', RoPE offsets on' : '') : ''],
     ['Detected WD14 tags', (p.wd14_tags || []).join(' | ')],
+    ['WD14 tags by stage', Object.entries(p.wd14_tags_by_stage || {})
+      .filter(([, groups]) => (groups || []).length)
+      .map(([stage, groups]) => `${stage}: ${groups.join(' | ')}`)
+      .join('  //  ')],
     ['VAE tile', p.vae_tile_size ?? ''],
   ];
   return details
@@ -1152,7 +1182,7 @@ function loadParamsIntoForm(p){
   $('source_size_increment').value = p.source_size_increment ?? 64;
   $('tiled_diffusion_grid').value = p.tiled_diffusion_grid || '2x2';
   $('tiled_diffusion_overlap').value = p.tiled_diffusion_overlap ?? 128;
-  $('tiled_diffusion_rope_offset').value = p.tiled_diffusion_rope_offset || 'off';
+  $('tiled_diffusion_rope_offset').value = p.tiled_diffusion_rope_offset || 'on';
   $('hires').checked = !!p.hires;
   $('save_lowres').checked = !!p.save_lowres;
   $('pag_enabled').checked = !!p.pag_enabled;

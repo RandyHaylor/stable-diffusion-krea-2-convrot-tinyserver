@@ -174,6 +174,37 @@ def tagged_images_with_prompt_weights_for_stage(p: dict, stage: str) -> list[tup
     return tagged_images
 
 
+def record_tags_used_by_each_stage(p: dict,
+                                   primary_tag_groups: list[str] | None,
+                                   hires_tag_groups: list[str] | None) -> None:
+    """Write the tags each stage used into the job params, for the saved PNG.
+
+    `wd14_tags` stays the flat list of every tag group that reached the model, so
+    a reader that only wants "what was detected" is unchanged by the split. The
+    per-stage record is what says where each group was actually used, which the
+    prompt alone cannot show once the two stages carry different text.
+    """
+    primary_groups = list(primary_tag_groups or [])
+    hires_groups = list(hires_tag_groups or [])
+    p["wd14_tags_by_stage"] = {"primary": primary_groups, "hires": hires_groups}
+    p["wd14_tags"] = primary_groups + [group for group in hires_groups
+                                       if group not in primary_groups]
+
+
+def add_tags_read_from_the_first_stage_output(p: dict, stage_one_tag_groups: list[str]) -> None:
+    """Record tags read from the generated first stage, which only the hires pass uses.
+
+    These are known only once that image exists, so they arrive after the initial
+    record and are appended to the hires stage rather than replacing it.
+    """
+    if not stage_one_tag_groups:
+        return
+    by_stage = p.setdefault("wd14_tags_by_stage", {"primary": [], "hires": []})
+    by_stage["hires"] = list(by_stage.get("hires") or []) + list(stage_one_tag_groups)
+    p["wd14_tags"] = list(p.get("wd14_tags") or []) + [
+        group for group in stage_one_tag_groups if group not in (p.get("wd14_tags") or [])]
+
+
 def source_tag_prompt_weight(p: dict) -> float:
     """How hard the img2img source's tags pull, 1.0 for untouched."""
     return positive_weight_or_neutral(
@@ -574,6 +605,7 @@ class QueueManager:
             stage_one_tag_groups = (
                 tag_groups_for_images([(stage_one_name, NEUTRAL_TAG_PROMPT_WEIGHT)])
                 if wants_stage_one_tags else [])
+            add_tags_read_from_the_first_stage_output(p, stage_one_tag_groups)
             hires_prompt = apply_stage_one_tags(
                 compose_hires_prompt(p["prompt"], str(p.get("hires_prompt", "")),
                                      str(p.get("hires_prompt_mode", "append")),
@@ -601,6 +633,7 @@ class QueueManager:
             hires=hires_enabled,
             prefix=f"{stage}-{job['id']}",
             tag_groups=main_tag_groups,
+            hires_tag_groups=hires_image_tag_groups,
             vlm_image_names=stage_one_vision_images,
             supply_hires_input=supply_hires_input if pauses_between_stages else None,
             lowres_prefix=(f"krea-web-lowres-{job['id']}"
@@ -608,12 +641,15 @@ class QueueManager:
 
     def run_single_backend_generation(self, p: dict, hires: bool, prefix: str,
                                       tag_groups: list[str] | None = None,
+                                      hires_tag_groups: list[str] | None = None,
                                       lowres_prefix: str = "",
                                       vlm_image_names: list[str] | None = None,
                                       supply_hires_input=None) -> list[str]:
         # The job params are what both the output panel and the saved PNG report, so
         # the tags this request actually used are recorded there before it is sent.
-        p["wd14_tags"] = list(tag_groups or [])
+        # Marked by stage, because a hires stage's tags travel in the paused exchange
+        # rather than the request body and would otherwise leave no trace.
+        record_tags_used_by_each_stage(p, tag_groups, hires_tag_groups)
         try:
             pag_layers = list(dict.fromkeys(
                 int(layer.strip()) for layer in str(p.get("pag_layers", "")).split(",") if layer.strip()
@@ -707,6 +743,11 @@ class QueueManager:
             "seed": int(p["seed"]), "batch_count": 1,
         }
         payload["sample_params"]["sample_steps"] = steps
+        # The request still carries a schedule, because the hires pass takes its tail
+        # from one, but no step of it is executed. Reporting the setting would credit
+        # the result with a first stage that never ran.
+        if skips_first_stage_sampling:
+            p["steps"] = 0
         requested_loras = backend_loras_for_stage(p, "main")
         if requested_loras:
             payload["lora"] = requested_loras

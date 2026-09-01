@@ -8,6 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from tiled_diffusion import (  # noqa: E402
     LATENT_SCALE,
+    DEFAULT_TILED_DIFFUSION_ROPE_OFFSET_MODE,
     TILED_DIFFUSION_GRIDS,
     actual_overlap_between_tiles,
     describe_tiled_diffusion_settings,
@@ -17,6 +18,8 @@ from tiled_diffusion import (  # noqa: E402
     tile_size_covering_length,
     tile_start_positions_covering_length,
     tiled_diffusion_sample_args,
+    describe_which_stages_run,
+    stage_that_tiled_diffusion_applies_to,
 )
 
 failures: list[str] = []
@@ -102,6 +105,10 @@ def main() -> int:
     check("rope offsets are requested only when the setting is on",
           tiled_diffusion_sample_args(settings(tiled_diffusion_rope_offset="on"), 1248, 1824)
           .endswith("tiled_diffusion_rope_offset=1"))
+    check("rope offsets are on when the job says nothing about them",
+          tiled_diffusion_sample_args({"tiled_diffusion": "on", "tiled_diffusion_grid": "2x2"},
+                                      1248, 1824).endswith("tiled_diffusion_rope_offset=1"),
+          f"default is {DEFAULT_TILED_DIFFUSION_ROPE_OFFSET_MODE}")
 
     zero_overlap_args = tiled_diffusion_sample_args(settings(tiled_diffusion_overlap=0), 1248, 1824)
     check("an overlap below the minimum still leaves a latent cell to blend across",
@@ -126,6 +133,36 @@ def main() -> int:
           "single tile" in describe_tiled_diffusion_settings(
               settings(tiled_diffusion_grid="1x1"), 1248, 1824),
           describe_tiled_diffusion_settings(settings(tiled_diffusion_grid="1x1"), 1248, 1824))
+
+    # Tiling the primary stage under a hires stage spends model evaluations on a
+    # pass whose output the hires stage resamples anyway.
+    check("the hires stage is the only one tiled when it runs",
+          stage_that_tiled_diffusion_applies_to(settings(hires=True)) == "hires")
+    check("the primary stage tiles when it is the only stage",
+          stage_that_tiled_diffusion_applies_to(settings(hires=False)) == "primary")
+    check("no stage tiles when tiled diffusion is off",
+          stage_that_tiled_diffusion_applies_to(
+              settings(tiled_diffusion="off", hires=True)) == "")
+    check("a single tile grid is not tiling any stage",
+          stage_that_tiled_diffusion_applies_to(
+              settings(tiled_diffusion_grid="1x1", hires=False)) == "")
+
+    check("both stages are reported active for a hires job",
+          describe_which_stages_run(settings(hires=True))
+          == "primary stage: active, hires stage: active",
+          describe_which_stages_run(settings(hires=True)))
+    check("the hires stage is reported disabled when it is off",
+          describe_which_stages_run(settings(hires=False))
+          == "primary stage: active, hires stage: disabled",
+          describe_which_stages_run(settings(hires=False)))
+    check("the primary stage is reported skipped when the source replaces it",
+          describe_which_stages_run(settings(hires=True,
+                                             img2img_source_replaces_first_stage=True,
+                                             source_image="a.png"))
+          == "primary stage: skipped, hires stage: active",
+          describe_which_stages_run(settings(hires=True,
+                                             img2img_source_replaces_first_stage=True,
+                                             source_image="a.png")))
 
     if failures:
         print(f"\n{len(failures)} failing checks:")

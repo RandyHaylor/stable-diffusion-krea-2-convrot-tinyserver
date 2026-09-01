@@ -512,6 +512,32 @@ def main() -> int:
           == "img2img-tags-routed-nowhere",
           "no tags may be appended when no stage asked for them")
 
+    # Tags the hires stage used reach the prompt through the paused exchange, which
+    # the request body never carries, so they have to be recorded for the saved PNG
+    # separately or they are lost.
+    hires_only_tag_params = build_job_params("source-tags-to-hires-only")
+    hires_only_tag_params["source_image"] = uploaded_source["name"]
+    hires_only_tag_params["hires"] = True
+    hires_only_tag_params["img2img_source_tags_to_stage_one"] = False
+    hires_only_tag_params["img2img_source_tags_to_hires"] = True
+    client.post("/api/jobs", json={"params": hires_only_tag_params}, headers=session_headers)
+    hires_only_tag_job = wait_until(
+        lambda: next((j for j in client.get("/api/state", headers=session_headers).json()["history"]
+                      if (j["params"] or {}).get("prompt") == "source-tags-to-hires-only"
+                      and j["status"] == "completed"), None),
+        30, "source-tags-to-hires-only job to complete")
+    recorded_tags_by_stage = hires_only_tag_job["params"].get("wd14_tags_by_stage") or {}
+    check("tags used only by the hires stage are still recorded on the job",
+          bool(recorded_tags_by_stage.get("hires")),
+          f"wd14_tags_by_stage={recorded_tags_by_stage!r}")
+    check("tags the primary stage never saw are not attributed to it",
+          recorded_tags_by_stage.get("primary") == [],
+          f"wd14_tags_by_stage={recorded_tags_by_stage!r}")
+    check("hires-only tags still appear in the flat detected-tags record",
+          hires_only_tag_job["params"].get("wd14_tags")
+          == recorded_tags_by_stage.get("hires"),
+          f"wd14_tags={hires_only_tag_job['params'].get('wd14_tags')!r}")
+
     def run_job_and_wait(params: dict, prompt: str):
         client.post("/api/jobs", json={"params": params}, headers=session_headers)
         return wait_until(
@@ -658,6 +684,12 @@ def main() -> int:
           "tiled_diffusion_tile_width"
           not in refine_source_requests[0]["sample_params"]["extra_sample_args"],
           "the two settings are independent")
+    check("a first stage that never samples reports zero steps, not the unused setting",
+          refine_source_job["params"].get("steps") == 0,
+          f"got {refine_source_job['params'].get('steps')!r}")
+    check("reporting zero steps does not change what the request asks the runtime for",
+          refine_source_requests[0]["sample_params"]["sample_steps"] > 0,
+          "the schedule still has to exist for the hires pass to take its tail from")
     check("the user's source image is never deleted by the job",
           (krea_web.OUTPUT_DIR / uploaded_source["name"]).is_file(),
           "a generated first stage is discarded when save_lowres is off; "
